@@ -1,6 +1,8 @@
 // app/(tabs)/_layout.tsx
 import { Tabs } from "expo-router";
 import { MaterialIcons } from "@expo/vector-icons";
+import { Ionicons } from '@expo/vector-icons';
+
 
 export default function TabsLayout() {
   return (
@@ -60,6 +62,7 @@ export default function TabsLayout() {
           ),
         }}
       />
+
     </Tabs>
   );
 }
