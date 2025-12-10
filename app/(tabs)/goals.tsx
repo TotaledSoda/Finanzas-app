@@ -15,17 +15,29 @@ import {
 } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import { useRouter } from "expo-router";
 import { api } from "../../src/api/client";
 
-const PRIMARY = "#13ec5b";
-const BG_DARK = "#020617";
-const SURFACE = "#0b1120";
+const PRIMARY = "#084D6E"; // azul principal
+const BG_DARK = "#d9e1e9ff"; // fondo claro y sereno
+const SURFACE = "#FFFFFF"; // tarjetas
+const TEXT_PRIMARY = "#072A4A"; // texto principal, azul oscuro
+const TEXT_MUTED = "#59708B"; // texto secundario, gris azulado
+const BORDER_SOFT = "#E6EEF7"; // bordes sutiles
+const AVATAR_BG = PRIMARY;
+const ICON_BG = "#0B2740"; // fondo de iconos redondos
+const INPUT_BG = "#F0F5FB"; // fondo input suave
+const BUTTON_TEXT = "#FFFFFF";
+const PROGRESS_BG = "#EAF2FF"; // fondo barra de progreso
+const ICON_ACCENT = "#2DD4BF"; // acento teal para algunos iconos
+const CHANGE_POS = "#16A34A"; // verde positivo
+const CHANGE_NEG = "#DC2626"; // rojo negativo
 
 type FilterType = "active" | "completed" | "shared";
 
 type ParticipantPivot = {
   role?: string;
-  expected_contribution?: string | null;
+  expected_contribution?: string | number | null;
 };
 
 type Participant = {
@@ -40,46 +52,58 @@ type SavingGoal = {
   id: number;
   name: string;
   description?: string | null;
-  target_amount: number;
-  current_amount: number;
+  target_amount: number | string;
+  current_amount: number | string;
   deadline?: string | null; // "2025-12-31"
   category?: string | null;
   is_group?: boolean;
   status?: "active" | "completed" | "archived";
   participants?: Participant[];
+  // por si algún día usas este campo que viene del backend
+  progress_percent?: number;
 };
 
-type GoalsIndexResponse =
-  | SavingGoal[]
-  | {
-      data: SavingGoal[];
-      [key: string]: any;
-    };
+type GoalsIndexResponse = SavingGoal[];
 
-function formatAmount(amount: number) {
-  return amount.toLocaleString("es-MX", {
+// 🔢 Helper para convertir string/number a number seguro
+function toNumber(value: any): number {
+  if (typeof value === "number") return isNaN(value) ? 0 : value;
+  if (typeof value === "string") {
+    const n = parseFloat(value);
+    return isNaN(n) ? 0 : n;
+  }
+  return 0;
+}
+
+function formatAmount(amount: number | string) {
+  const value = toNumber(amount);
+  return value.toLocaleString("es-MX", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
 }
 
 function getProgress(goal: SavingGoal): number {
-  const target = goal.target_amount || 0;
-  const current = goal.current_amount || 0;
+  const target = toNumber(goal.target_amount);
+  const current = toNumber(goal.current_amount);
   if (target <= 0) return 0;
   const p = (current / target) * 100;
   return Math.max(0, Math.min(100, p));
 }
 
 function isGoalCompleted(goal: SavingGoal): boolean {
+  const target = toNumber(goal.target_amount);
+  const current = toNumber(goal.current_amount);
+
   if (goal.status === "completed") return true;
-  return goal.current_amount >= goal.target_amount && goal.target_amount > 0;
+  return current >= target && target > 0;
 }
 
 function formatDeadline(deadline?: string | null) {
   if (!deadline) return "Sin fecha límite";
   try {
     const date = new Date(deadline);
+    if (isNaN(date.getTime())) return deadline;
     return date.toLocaleDateString("es-MX", {
       year: "numeric",
       month: "short",
@@ -101,6 +125,8 @@ function getInitials(name?: string, email?: string) {
 }
 
 export default function GoalsScreen() {
+  const router = useRouter();
+
   const [filter, setFilter] = useState<FilterType>("active");
   const [goals, setGoals] = useState<SavingGoal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -175,9 +201,9 @@ export default function GoalsScreen() {
     try {
       setLoading(true);
       setError(null);
-      const res = await api.get<GoalsIndexResponse>("/goals");
-      const list = Array.isArray(res.data) ? res.data : res.data.data;
-      setGoals(list || []);
+      const res = await api.get<GoalsIndexResponse>("/saving-goals");
+      const list = res.data ?? [];
+      setGoals(list);
     } catch (e: any) {
       console.log("Error loading goals:", e?.response?.data || e);
       setError("No se pudieron cargar las metas.");
@@ -203,7 +229,10 @@ export default function GoalsScreen() {
 
   const handleCreateGoal = async () => {
     if (!goalName || !goalTarget) {
-      Alert.alert("Campos incompletos", "Ingresa al menos nombre y objetivo.");
+      Alert.alert(
+        "Campos incompletos",
+        "Ingresa al menos nombre y monto objetivo."
+      );
       return;
     }
 
@@ -224,14 +253,24 @@ export default function GoalsScreen() {
     const payload: any = {
       name: goalName,
       target_amount: target,
-      current_amount: initial,
       deadline: deadlineString,
-      is_group: isGroup, // 👈 coincide con tu modelo
+      is_group: isGroup,
     };
 
     try {
       setLoadingAction(true);
-      await api.post("/goals", payload);
+
+      // 1) Crear meta
+      const res = await api.post<SavingGoal>("/saving-goals", payload);
+      const created = res.data;
+
+      // 2) Si hay monto inicial, lo registramos como contribución
+      if (initial > 0 && created?.id) {
+        await api.post(`/saving-goals/${created.id}/contribute`, {
+          amount: initial,
+        });
+      }
+
       await fetchGoals();
       closeCreateModal();
       resetCreateForm();
@@ -263,22 +302,9 @@ export default function GoalsScreen() {
     try {
       setLoadingAction(true);
 
-      // Intento 1: endpoint dedicado de depósito
-      try {
-        await api.post(`/goals/${selectedGoal.id}/deposit`, { amount });
-      } catch (e: any) {
-        const status = e?.response?.status;
-        // Si no existe /deposit, actualizamos current_amount directamente
-        if (status === 404 || status === 405) {
-          const newCurrent =
-            (selectedGoal.current_amount || 0) + parseFloat(depositAmount);
-          await api.put(`/goals/${selectedGoal.id}`, {
-            current_amount: newCurrent,
-          });
-        } else {
-          throw e;
-        }
-      }
+      await api.post(`/saving-goals/${selectedGoal.id}/contribute`, {
+        amount,
+      });
 
       await fetchGoals();
       closeDepositModal();
@@ -323,7 +349,10 @@ export default function GoalsScreen() {
 
     try {
       setLoadingAction(true);
-      await api.post(`/goals/${selectedGoalForMember.id}/members`, payload);
+      await api.post(
+        `/saving-goals/${selectedGoalForMember.id}/members`,
+        payload
+      );
       await fetchGoals();
       closeAddMemberModal();
       Alert.alert(
@@ -362,6 +391,9 @@ export default function GoalsScreen() {
     const participants = goal.participants || [];
     const showParticipants = goal.is_group && participants.length > 0;
 
+    const current = toNumber(goal.current_amount);
+    const target = toNumber(goal.target_amount);
+
     return (
       <TouchableOpacity
         key={goal.id}
@@ -385,7 +417,6 @@ export default function GoalsScreen() {
           </View>
 
           <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-            {/* Botón agregar persona solo si es grupal */}
             {goal.is_group && (
               <TouchableOpacity
                 onPress={() => openAddMemberModal(goal)}
@@ -408,9 +439,9 @@ export default function GoalsScreen() {
         <View style={{ marginTop: 6 }}>
           <View style={styles.cardAmountsRow}>
             <Text style={styles.cardAmountText}>
-              ${formatAmount(goal.current_amount || 0)}{" "}
+              ${formatAmount(current)}{" "}
               <Text style={styles.cardAmountSub}>
-                / ${formatAmount(goal.target_amount || 0)}
+                / ${formatAmount(target)}
               </Text>
             </Text>
             <Text
@@ -432,7 +463,6 @@ export default function GoalsScreen() {
           </View>
         </View>
 
-        {/* Badges */}
         <View style={{ marginTop: 6, flexDirection: "row", gap: 8 }}>
           {goal.is_group && (
             <View style={styles.sharedBadge}>
@@ -449,7 +479,6 @@ export default function GoalsScreen() {
           )}
         </View>
 
-        {/* Participantes */}
         {showParticipants && (
           <View style={styles.participantsContainer}>
             <Text style={styles.participantsTitle}>Participantes</Text>
@@ -469,7 +498,7 @@ export default function GoalsScreen() {
                       <Text style={styles.participantSub}>
                         Aporta: $
                         {formatAmount(
-                          parseFloat(p.pivot.expected_contribution || "0")
+                          p.pivot.expected_contribution ?? 0
                         )}
                       </Text>
                     )}
@@ -493,353 +522,363 @@ export default function GoalsScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.container}>
-        {/* Top bar */}
-        <View style={styles.header}>
-          <TouchableOpacity activeOpacity={0.7}>
-            <MaterialIcons name="arrow-back" size={24} color="#e5e7eb" />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Mis Metas de Ahorro</Text>
-          <View style={{ width: 24 }} />
-        </View>
+      {/* Wrapper para que sea más responsivo en pantallas grandes */}
+      <View style={styles.contentWrapper}>
+        <View style={styles.container}>
+          {/* Top bar */}
+          <View style={styles.header}>
+            <TouchableOpacity activeOpacity={0.7} onPress={() => router.back()}>
+              <MaterialIcons name="arrow-back" size={24} color="#e5e7eb" />
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Mis Metas de Ahorro</Text>
+            <View style={{ width: 24 }} />
+          </View>
 
-        {/* Segmented control */}
-        <View style={styles.segmentWrapper}>
-          <View style={styles.segmentBackground}>
-            <TouchableOpacity
-              style={[
-                styles.segmentItem,
-                filter === "active" && styles.segmentItemActive,
-              ]}
-              onPress={() => setFilter("active")}
-            >
-              <Text
+          {/* Segmented control */}
+          <View style={styles.segmentWrapper}>
+            <View style={styles.segmentBackground}>
+              <TouchableOpacity
                 style={[
-                  styles.segmentText,
-                  filter === "active" && styles.segmentTextActive,
+                  styles.segmentItem,
+                  filter === "active" && styles.segmentItemActive,
                 ]}
+                onPress={() => setFilter("active")}
               >
-                Activas
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.segmentItem,
-                filter === "completed" && styles.segmentItemActive,
-              ]}
-              onPress={() => setFilter("completed")}
-            >
-              <Text
-                style={[
-                  styles.segmentText,
-                  filter === "completed" && styles.segmentTextActive,
-                ]}
-              >
-                Completadas
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.segmentItem,
-                filter === "shared" && styles.segmentItemActive,
-              ]}
-              onPress={() => setFilter("shared")}
-            >
-              <Text
-                style={[
-                  styles.segmentText,
-                  filter === "shared" && styles.segmentTextActive,
-                ]}
-              >
-                Grupales
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Contenido */}
-        {loading ? (
-          <View style={styles.centerFill}>
-            <ActivityIndicator size="large" color={PRIMARY} />
-            <Text style={styles.loadingText}>Cargando metas...</Text>
-          </View>
-        ) : error ? (
-          <View style={styles.centerFill}>
-            <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity style={styles.retryButton} onPress={fetchGoals}>
-              <Text style={styles.retryText}>Reintentar</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={{ paddingBottom: 96, paddingTop: 4 }}
-          >
-            {filteredGoals.length === 0 ? (
-              <View style={styles.emptyBox}>
-                <MaterialIcons
-                  name="savings"
-                  size={40}
-                  color="rgba(148,163,184,0.8)"
-                />
-                <Text style={styles.emptyTitle}>Sin metas aún</Text>
-                <Text style={styles.emptyText}>
-                  Crea tu primera meta con el botón verde de abajo.
+                <Text
+                  style={[
+                    styles.segmentText,
+                    filter === "active" && styles.segmentTextActive,
+                  ]}
+                >
+                  Activas
                 </Text>
-              </View>
-            ) : (
-              filteredGoals.map(renderGoalCard)
-            )}
-          </ScrollView>
-        )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.segmentItem,
+                  filter === "completed" && styles.segmentItemActive,
+                ]}
+                onPress={() => setFilter("completed")}
+              >
+                <Text
+                  style={[
+                    styles.segmentText,
+                    filter === "completed" && styles.segmentTextActive,
+                  ]}
+                >
+                  Completadas
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.segmentItem,
+                  filter === "shared" && styles.segmentItemActive,
+                ]}
+                onPress={() => setFilter("shared")}
+              >
+                <Text
+                  style={[
+                    styles.segmentText,
+                    filter === "shared" && styles.segmentTextActive,
+                  ]}
+                >
+                  Grupales
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
-        {/* FAB Crear meta */}
-        <TouchableOpacity style={styles.fab} onPress={openCreateModal}>
-          <MaterialIcons name="add" size={30} color="#020617" />
-        </TouchableOpacity>
+          {/* Contenido */}
+          {loading ? (
+            <View style={styles.centerFill}>
+              <ActivityIndicator size="large" color={PRIMARY} />
+              <Text style={styles.loadingText}>Cargando metas...</Text>
+            </View>
+          ) : error ? (
+            <View style={styles.centerFill}>
+              <Text style={styles.errorText}>{error}</Text>
+              <TouchableOpacity style={styles.retryButton} onPress={fetchGoals}>
+                <Text style={styles.retryText}>Reintentar</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={{ paddingBottom: 96, paddingTop: 4 }}
+            >
+              {filteredGoals.length === 0 ? (
+                <View style={styles.emptyBox}>
+                  <MaterialIcons
+                    name="savings"
+                    size={40}
+                    color="rgba(148,163,184,0.8)"
+                  />
+                  <Text style={styles.emptyTitle}>Sin metas aún</Text>
+                  <Text style={styles.emptyText}>
+                    Crea tu primera meta con el botón verde de abajo.
+                  </Text>
+                </View>
+              ) : (
+                filteredGoals.map(renderGoalCard)
+              )}
+            </ScrollView>
+          )}
 
-        {/* Modal Crear Meta */}
-        <Modal
-          visible={createModalVisible}
-          animationType="slide"
-          transparent
-          onRequestClose={closeCreateModal}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Nueva meta de ahorro</Text>
-                <TouchableOpacity onPress={closeCreateModal}>
-                  <MaterialIcons name="close" size={22} color="#9ca3af" />
-                </TouchableOpacity>
-              </View>
+          {/* FAB Crear meta */}
+          <TouchableOpacity style={styles.fab} onPress={openCreateModal}>
+            <MaterialIcons name="add" size={30} color="#020617" />
+          </TouchableOpacity>
 
-              <View style={styles.formField}>
-                <Text style={styles.label}>Nombre</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ej. Viaje a Cancún"
-                  placeholderTextColor="#6b7280"
-                  value={goalName}
-                  onChangeText={setGoalName}
-                />
-              </View>
+          {/* Modal Crear Meta */}
+          <Modal
+            visible={createModalVisible}
+            animationType="slide"
+            transparent
+            onRequestClose={closeCreateModal}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Nueva meta de ahorro</Text>
+                  <TouchableOpacity onPress={closeCreateModal}>
+                    <MaterialIcons name="close" size={22} color="#9ca3af" />
+                  </TouchableOpacity>
+                </View>
 
-              <View style={styles.formField}>
-                <Text style={styles.label}>Monto objetivo</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ej. 20000"
-                  placeholderTextColor="#6b7280"
-                  keyboardType="decimal-pad"
-                  value={goalTarget}
-                  onChangeText={setGoalTarget}
-                />
-              </View>
+                <View style={styles.formField}>
+                  <Text style={styles.label}>Nombre</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Ej. Viaje a Cancún"
+                    placeholderTextColor="#6b7280"
+                    value={goalName}
+                    onChangeText={setGoalName}
+                  />
+                </View>
 
-              <View style={styles.formField}>
-                <Text style={styles.label}>Monto inicial (opcional)</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ej. 1000"
-                  placeholderTextColor="#6b7280"
-                  keyboardType="decimal-pad"
-                  value={goalInitial}
-                  onChangeText={setGoalInitial}
-                />
-              </View>
+                <View style={styles.formField}>
+                  <Text style={styles.label}>Monto objetivo</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Ej. 20000"
+                    placeholderTextColor="#6b7280"
+                    keyboardType="decimal-pad"
+                    value={goalTarget}
+                    onChangeText={setGoalTarget}
+                  />
+                </View>
 
-              <View style={styles.formField}>
-                <Text style={styles.label}>Fecha límite (opcional)</Text>
+                <View style={styles.formField}>
+                  <Text style={styles.label}>Monto inicial (opcional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Ej. 1000"
+                    placeholderTextColor="#6b7280"
+                    keyboardType="decimal-pad"
+                    value={goalInitial}
+                    onChangeText={setGoalInitial}
+                  />
+                </View>
+
+                <View style={styles.formField}>
+                  <Text style={styles.label}>Fecha límite (opcional)</Text>
+
+                  <TouchableOpacity
+                    onPress={() => setShowDeadlinePicker(true)}
+                    style={[styles.input, { justifyContent: "center" }]}
+                  >
+                    <Text style={{ color: "#f9fafb", fontSize: 13 }}>
+                      {goalDeadline.toISOString().substring(0, 10)}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {showDeadlinePicker && (
+                    <DateTimePicker
+                      value={goalDeadline}
+                      mode="date"
+                      display="spinner"
+                      onChange={(event, selectedDate) => {
+                        setShowDeadlinePicker(false);
+                        if (selectedDate) {
+                          setGoalDeadline(selectedDate);
+                        }
+                      }}
+                    />
+                  )}
+                </View>
+
+                <View
+                  style={[
+                    styles.formField,
+                    { flexDirection: "row", alignItems: "center" },
+                  ]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.label}>Meta grupal</Text>
+                    <Text style={styles.helperText}>
+                      Activa esta opción si ahorrarás con más personas.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={isGroup}
+                    onValueChange={setIsGroup}
+                    trackColor={{ false: "#374151", true: PRIMARY }}
+                    thumbColor={isGroup ? "#022c22" : "#111827"}
+                  />
+                </View>
 
                 <TouchableOpacity
-                  onPress={() => setShowDeadlinePicker(true)}
-                  style={[styles.input, { justifyContent: "center" }]}
+                  style={[
+                    styles.saveButton,
+                    loadingAction && { opacity: 0.7 },
+                  ]}
+                  onPress={handleCreateGoal}
+                  disabled={loadingAction}
                 >
-                  <Text style={{ color: "#f9fafb", fontSize: 13 }}>
-                    {goalDeadline.toISOString().substring(0, 10)}
+                  <Text style={styles.saveButtonText}>
+                    {loadingAction ? "Guardando..." : "Crear meta"}
                   </Text>
                 </TouchableOpacity>
-
-                {showDeadlinePicker && (
-                  <DateTimePicker
-                    value={goalDeadline}
-                    mode="date"
-                    display="spinner"
-                    onChange={(event, selectedDate) => {
-                      setShowDeadlinePicker(false);
-                      if (selectedDate) {
-                        setGoalDeadline(selectedDate);
-                      }
-                    }}
-                  />
-                )}
               </View>
-
-              <View
-                style={[
-                  styles.formField,
-                  { flexDirection: "row", alignItems: "center" },
-                ]}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.label}>Meta grupal</Text>
-                  <Text style={styles.helperText}>
-                    Activa esta opción si ahorrarás con más personas.
-                  </Text>
-                </View>
-                <Switch
-                  value={isGroup}
-                  onValueChange={setIsGroup}
-                  trackColor={{ false: "#374151", true: PRIMARY }}
-                  thumbColor={isGroup ? "#022c22" : "#111827"}
-                />
-              </View>
-
-              <TouchableOpacity
-                style={[
-                  styles.saveButton,
-                  loadingAction && { opacity: 0.7 },
-                ]}
-                onPress={handleCreateGoal}
-                disabled={loadingAction}
-              >
-                <Text style={styles.saveButtonText}>
-                  {loadingAction ? "Guardando..." : "Crear meta"}
-                </Text>
-              </TouchableOpacity>
             </View>
-          </View>
-        </Modal>
+          </Modal>
 
-        {/* Modal Depósito */}
-        <Modal
-          visible={depositModalVisible}
-          animationType="slide"
-          transparent
-          onRequestClose={closeDepositModal}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
-                  Añadir ahorro
-                  {selectedGoal ? ` - ${selectedGoal.name}` : ""}
-                </Text>
-                <TouchableOpacity onPress={closeDepositModal}>
-                  <MaterialIcons name="close" size={22} color="#9ca3af" />
-                </TouchableOpacity>
-              </View>
+          {/* Modal Depósito */}
+          <Modal
+            visible={depositModalVisible}
+            animationType="slide"
+            transparent
+            onRequestClose={closeDepositModal}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>
+                    Añadir ahorro
+                    {selectedGoal ? ` - ${selectedGoal.name}` : ""}
+                  </Text>
+                  <TouchableOpacity onPress={closeDepositModal}>
+                    <MaterialIcons name="close" size={22} color="#9ca3af" />
+                  </TouchableOpacity>
+                </View>
 
-              {selectedGoal && (
-                <View style={{ marginBottom: 8 }}>
-                  <Text style={styles.label}>
-                    Progreso actual:{" "}
-                    <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
-                      $
-                      {formatAmount(selectedGoal.current_amount || 0)} / $
-                      {formatAmount(selectedGoal.target_amount || 0)}
+                {selectedGoal && (
+                  <View style={{ marginBottom: 8 }}>
+                    <Text style={styles.label}>
+                      Progreso actual:{" "}
+                      <Text
+                        style={{ fontWeight: "700", color: "#e5e7eb" }}
+                      >
+                        $
+                        {formatAmount(
+                          toNumber(selectedGoal.current_amount)
+                        )}{" "}
+                        / $
+                        {formatAmount(
+                          toNumber(selectedGoal.target_amount)
+                        )}
+                      </Text>
                     </Text>
-                  </Text>
+                  </View>
+                )}
+
+                <View style={styles.formField}>
+                  <Text style={styles.label}>Monto a agregar</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Ej. 500"
+                    placeholderTextColor="#6b7280"
+                    keyboardType="decimal-pad"
+                    value={depositAmount}
+                    onChangeText={setDepositAmount}
+                  />
                 </View>
-              )}
 
-              <View style={styles.formField}>
-                <Text style={styles.label}>Monto a agregar</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ej. 500"
-                  placeholderTextColor="#6b7280"
-                  keyboardType="decimal-pad"
-                  value={depositAmount}
-                  onChangeText={setDepositAmount}
-                />
-              </View>
-
-              <TouchableOpacity
-                style={[
-                  styles.saveButton,
-                  loadingAction && { opacity: 0.7 },
-                ]}
-                onPress={handleDeposit}
-                disabled={loadingAction}
-              >
-                <Text style={styles.saveButtonText}>
-                  {loadingAction ? "Guardando..." : "Registrar ahorro"}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
-
-        {/* Modal Agregar persona a meta */}
-        <Modal
-          visible={addMemberModalVisible}
-          animationType="slide"
-          transparent
-          onRequestClose={closeAddMemberModal}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
-              <View className="modal-header" style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
-                  Agregar persona
-                  {selectedGoalForMember
-                    ? ` a "${selectedGoalForMember.name}"`
-                    : ""}
-                </Text>
-                <TouchableOpacity onPress={closeAddMemberModal}>
-                  <MaterialIcons name="close" size={22} color="#9ca3af" />
+                <TouchableOpacity
+                  style={[
+                    styles.saveButton,
+                    loadingAction && { opacity: 0.7 },
+                  ]}
+                  onPress={handleDeposit}
+                  disabled={loadingAction}
+                >
+                  <Text style={styles.saveButtonText}>
+                    {loadingAction ? "Guardando..." : "Registrar ahorro"}
+                  </Text>
                 </TouchableOpacity>
               </View>
-
-              <View style={styles.formField}>
-                <Text style={styles.label}>Correo electrónico</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="ejemplo@correo.com"
-                  placeholderTextColor="#6b7280"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  value={memberEmail}
-                  onChangeText={setMemberEmail}
-                />
-              </View>
-
-              <View style={styles.formField}>
-                <Text style={styles.label}>
-                  Aportación esperada (opcional)
-                </Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ej. 500"
-                  placeholderTextColor="#6b7280"
-                  keyboardType="decimal-pad"
-                  value={memberExpected}
-                  onChangeText={setMemberExpected}
-                />
-              </View>
-
-              <Text style={styles.helperText}>
-                Si la persona no tiene cuenta, puedes manejar en el backend que
-                se le envíe una invitación.
-              </Text>
-
-              <TouchableOpacity
-                style={[
-                  styles.saveButton,
-                  loadingAction && { opacity: 0.7 },
-                ]}
-                onPress={handleAddMember}
-                disabled={loadingAction}
-              >
-                <Text style={styles.saveButtonText}>
-                  {loadingAction ? "Guardando..." : "Agregar a la meta"}
-                </Text>
-              </TouchableOpacity>
             </View>
-          </View>
-        </Modal>
+          </Modal>
+
+          {/* Modal Agregar persona a meta */}
+          <Modal
+            visible={addMemberModalVisible}
+            animationType="slide"
+            transparent
+            onRequestClose={closeAddMemberModal}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>
+                    Agregar persona
+                    {selectedGoalForMember
+                      ? ` a "${selectedGoalForMember.name}"`
+                      : ""}
+                  </Text>
+                  <TouchableOpacity onPress={closeAddMemberModal}>
+                    <MaterialIcons name="close" size={22} color="#9ca3af" />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.formField}>
+                  <Text style={styles.label}>Correo electrónico</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="ejemplo@correo.com"
+                    placeholderTextColor="#6b7280"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={memberEmail}
+                    onChangeText={setMemberEmail}
+                  />
+                </View>
+
+                <View style={styles.formField}>
+                  <Text style={styles.label}>
+                    Aportación esperada (opcional)
+                  </Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Ej. 500"
+                    placeholderTextColor="#6b7280"
+                    keyboardType="decimal-pad"
+                    value={memberExpected}
+                    onChangeText={setMemberExpected}
+                  />
+                </View>
+
+                <Text style={styles.helperText}>
+                  Si la persona no tiene cuenta, puede enviarle una
+                  invitación.
+                </Text>
+
+                <TouchableOpacity
+                  style={[
+                    styles.saveButton,
+                    loadingAction && { opacity: 0.7 },
+                  ]}
+                  onPress={handleAddMember}
+                  disabled={loadingAction}
+                >
+                  <Text style={styles.saveButtonText}>
+                    {loadingAction ? "Guardando..." : "Agregar a la meta"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -847,7 +886,19 @@ export default function GoalsScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: BG_DARK },
-  container: { flex: 1, backgroundColor: BG_DARK, paddingHorizontal: 16 },
+  // wrapper para centrar contenido y hacerlo más responsivo en tablets
+  contentWrapper: {
+    flex: 1,
+    width: "100%",
+    maxWidth: 640,
+    alignSelf: "center",
+  },
+  container: {
+    flex: 1,
+    backgroundColor: BG_DARK,
+    paddingHorizontal: 16,
+    paddingTop: 30,
+  },
   header: {
     paddingTop: 8,
     paddingBottom: 8,
@@ -856,18 +907,18 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   headerTitle: {
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 18,
     fontWeight: "700",
   },
   segmentWrapper: { marginTop: 8, marginBottom: 4 },
   segmentBackground: {
     flexDirection: "row",
-    backgroundColor: "#020617",
+    backgroundColor: BG_DARK,
     borderRadius: 999,
     padding: 2,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   segmentItem: {
     flex: 1,
@@ -879,14 +930,14 @@ const styles = StyleSheet.create({
   segmentItemActive: { backgroundColor: SURFACE },
   segmentText: {
     fontSize: 12,
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontWeight: "500",
   },
-  segmentTextActive: { color: "#f9fafb", fontWeight: "700" },
+  segmentTextActive: { color: TEXT_PRIMARY, fontWeight: "700" },
   scroll: { flex: 1, marginTop: 8 },
   centerFill: { flex: 1, alignItems: "center", justifyContent: "center" },
-  loadingText: { marginTop: 8, color: "#9ca3af", fontSize: 12 },
-  errorText: { color: "#f97373", fontSize: 14, marginBottom: 8 },
+  loadingText: { marginTop: 8, color: TEXT_MUTED, fontSize: 12 },
+  errorText: { color: CHANGE_NEG, fontSize: 14, marginBottom: 8 },
   retryButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
@@ -903,7 +954,7 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   cardHeader: {
     flexDirection: "row",
@@ -916,7 +967,7 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 999,
-    backgroundColor: "#1d283a",
+    backgroundColor: ICON_BG,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -925,14 +976,14 @@ const styles = StyleSheet.create({
     height: 28,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#14532d",
-    backgroundColor: "#022c22",
+    borderColor: PRIMARY,
+    backgroundColor: ICON_BG,
     alignItems: "center",
     justifyContent: "center",
   },
-  cardTitle: { color: "#f9fafb", fontSize: 15, fontWeight: "700" },
+  cardTitle: { color: TEXT_PRIMARY, fontSize: 15, fontWeight: "700" },
   cardSubtitle: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 12,
     marginTop: 2,
   },
@@ -944,12 +995,12 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   cardAmountText: {
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 15,
     fontWeight: "700",
   },
   cardAmountSub: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 12,
     fontWeight: "400",
   },
@@ -961,7 +1012,7 @@ const styles = StyleSheet.create({
   progressBarBackground: {
     height: 6,
     borderRadius: 999,
-    backgroundColor: "#020617",
+    backgroundColor: PROGRESS_BG,
     overflow: "hidden",
   },
   progressBarFill: {
@@ -974,7 +1025,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   sharedBadgeText: {
-    color: "#22c55e",
+    color: ICON_ACCENT,
     fontSize: 11,
     fontWeight: "500",
   },
@@ -984,7 +1035,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   completedBadgeText: {
-    color: "#22c55e",
+    color: CHANGE_POS,
     fontSize: 11,
     fontWeight: "500",
   },
@@ -993,11 +1044,11 @@ const styles = StyleSheet.create({
   participantsContainer: {
     marginTop: 10,
     borderTopWidth: 1,
-    borderTopColor: "#1f2937",
+    borderTopColor: BORDER_SOFT,
     paddingTop: 8,
   },
   participantsTitle: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 11,
     marginBottom: 6,
     fontWeight: "500",
@@ -1013,9 +1064,9 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 6,
     borderRadius: 999,
-    backgroundColor: "#020617",
+    backgroundColor: BG_DARK,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
     maxWidth: "48%",
     gap: 6,
   },
@@ -1023,36 +1074,36 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 999,
-    backgroundColor: "#0f172a",
+    backgroundColor: AVATAR_BG,
     alignItems: "center",
     justifyContent: "center",
   },
   participantInitials: {
-    color: "#e5e7eb",
+    color: BUTTON_TEXT,
     fontSize: 11,
     fontWeight: "700",
   },
   participantName: {
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 12,
     fontWeight: "500",
   },
   participantSub: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 11,
   },
   moreParticipantsBadge: {
     width: 32,
     height: 32,
     borderRadius: 999,
-    backgroundColor: "#0f172a",
+    backgroundColor: ICON_BG,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   moreParticipantsText: {
-    color: "#e5e7eb",
+    color: BUTTON_TEXT,
     fontSize: 12,
     fontWeight: "600",
   },
@@ -1064,13 +1115,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   emptyTitle: {
-    color: "#e5e7eb",
+    color: TEXT_PRIMARY,
     fontSize: 16,
     fontWeight: "600",
     marginTop: 12,
   },
   emptyText: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 13,
     textAlign: "center",
     marginTop: 4,
@@ -1105,7 +1156,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     padding: 16,
     borderTopWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   modalHeader: {
     flexDirection: "row",
@@ -1114,13 +1165,13 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   modalTitle: {
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 16,
     fontWeight: "700",
   },
   formField: { marginTop: 10 },
   label: {
-    color: "#cbd5f5",
+    color: TEXT_MUTED,
     fontSize: 12,
     marginBottom: 4,
   },
@@ -1128,15 +1179,15 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#1f2937",
-    backgroundColor: "#020617",
+    borderColor: BORDER_SOFT,
+    backgroundColor: INPUT_BG,
     paddingHorizontal: 12,
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 13,
     justifyContent: "center",
   },
   helperText: {
-    color: "#6b7280",
+    color: TEXT_MUTED,
     fontSize: 11,
     marginTop: 4,
   },
@@ -1150,7 +1201,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   saveButtonText: {
-    color: "#052e16",
+    color: BUTTON_TEXT,
     fontSize: 15,
     fontWeight: "700",
   },

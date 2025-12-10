@@ -15,8 +15,10 @@ import { useRouter } from "expo-router";
 import { useAuth } from "../src/context/AuthContext";
 import { api } from "../src/api/client";
 
-const PRIMARY = "#13ec5b";
-const BG_DARK = "#102216";
+const PRIMARY = "#084D6E";
+const BG_DARK = "#d9e1e9ff";
+const TEXT_PRIMARY = "#072A4A";
+const TEXT_MUTED = "#59708B";
 
 export default function RegisterScreen() {
   const router = useRouter();
@@ -181,7 +183,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 26,
     fontWeight: "700",
-    color: "#f9fafb",
+    color: "#353636ff",
     marginBottom: 4,
   },
   subtitle: {
@@ -200,7 +202,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#334155",
-    backgroundColor: "#020617",
+    backgroundColor: "#fffffff1",
     color: "#f9fafb",
     paddingHorizontal: 16,
     height: 48,

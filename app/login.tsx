@@ -14,8 +14,20 @@ import { MaterialIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useAuth } from "../src/context/AuthContext";
 
-const PRIMARY = "#13ec5b";
-const BG_DARK = "#102216";
+const PRIMARY = "#084D6E"; // azul principal
+const BG_DARK = "#d9e1e9ff"; // fondo claro y sereno
+const SURFACE = "#FFFFFF"; // tarjetas
+const TEXT_PRIMARY = "#072A4A"; // texto principal, azul oscuro
+const TEXT_MUTED = "#59708B"; // texto secundario, gris azulado
+const BORDER_SOFT = "#E6EEF7"; // bordes sutiles
+const AVATAR_BG = PRIMARY;
+const ICON_BG = "#0B2740"; // fondo de iconos redondos (usado como color de iconos)
+const INPUT_BG = "#F0F5FB"; // fondo input suave
+const BUTTON_TEXT = "#FFFFFF";
+const PROGRESS_BG = "#EAF2FF";
+const ICON_ACCENT = "#2DD4BF";
+const CHANGE_POS = "#16A34A";
+const CHANGE_NEG = "#DC2626";
 
 export default function LoginScreen() {
   const { login } = useAuth();
@@ -45,7 +57,7 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="dark-content" />
       <View style={styles.container}>
         <View style={styles.logoWrapper}>
           <View style={styles.logoCircleOuter}>
@@ -60,7 +72,7 @@ export default function LoginScreen() {
           <TextInput
             style={styles.input}
             placeholder="Ingresa tu correo electrónico"
-            placeholderTextColor="#64748b"
+            placeholderTextColor={TEXT_MUTED}
             keyboardType="email-address"
             autoCapitalize="none"
             value={email}
@@ -72,7 +84,7 @@ export default function LoginScreen() {
             <TextInput
               style={[styles.input, { paddingRight: 44 }]}
               placeholder="Ingresa tu contraseña"
-              placeholderTextColor="#64748b"
+              placeholderTextColor={TEXT_MUTED}
               secureTextEntry={!showPass}
               value={password}
               onChangeText={setPassword}
@@ -84,7 +96,7 @@ export default function LoginScreen() {
               <MaterialIcons
                 name={showPass ? "visibility-off" : "visibility"}
                 size={22}
-                color="#94a3b8"
+                color={TEXT_MUTED}
               />
             </TouchableOpacity>
           </View>
@@ -94,7 +106,7 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.loginButton, loading && { opacity: 0.7 }]}
+            style={[styles.loginButton, loading && { opacity: 0.8 }]}
             onPress={handleLogin}
             disabled={loading}
           >
@@ -111,27 +123,21 @@ export default function LoginScreen() {
 
           <View style={styles.socialRow}>
             <TouchableOpacity style={styles.socialButton}>
-              <MaterialIcons name="email" size={20} color="#0f172a" />
+              <MaterialIcons name="email" size={20} color={ICON_BG} />
               <Text style={styles.socialText}>Google</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.socialButton}>
-              <MaterialIcons name="apple" size={20} color="#0f172a" />
+              <MaterialIcons name="apple" size={20} color={ICON_BG} />
               <Text style={styles.socialText}>Apple</Text>
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.footerText}>
-            ¿No tienes cuenta?{" "}
-            
-          </Text>
           <View style={styles.footerContainer}>
-  <Text style={styles.footerText}>
-    ¿No tienes cuenta?{" "}
-  </Text>
-  <TouchableOpacity onPress={() => router.push("/register")}>
-    <Text style={styles.footerLink}>Regístrate</Text>
-  </TouchableOpacity>
-</View>
+            <Text style={styles.footerText}>¿No tienes cuenta?{" "}</Text>
+            <TouchableOpacity onPress={() => router.push("/register")}>
+              <Text style={styles.footerLink}>Regístrate</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     </SafeAreaView>
@@ -151,7 +157,7 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: "rgba(19, 236, 91, 0.2)",
+    backgroundColor: "rgba(8,77,110,0.12)",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -159,18 +165,18 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: PRIMARY,
+    backgroundColor: AVATAR_BG,
   },
   title: {
     fontSize: 28,
     fontWeight: "700",
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     textAlign: "center",
     marginBottom: 24,
   },
   form: { gap: 8 },
   label: {
-    color: "#e2e8f0",
+    color: TEXT_PRIMARY,
     fontSize: 14,
     fontWeight: "500",
     marginBottom: 4,
@@ -178,9 +184,9 @@ const styles = StyleSheet.create({
   input: {
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#334155",
-    backgroundColor: "#020617",
-    color: "#f9fafb",
+    borderColor: BORDER_SOFT,
+    backgroundColor: INPUT_BG,
+    color: TEXT_PRIMARY,
     paddingHorizontal: 16,
     height: 52,
     fontSize: 14,
@@ -201,32 +207,38 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  loginText: { color: "#052e16", fontSize: 16, fontWeight: "700" },
+  loginText: { color: BUTTON_TEXT, fontSize: 16, fontWeight: "700" },
   dividerRow: {
     flexDirection: "row",
     alignItems: "center",
     marginVertical: 16,
     gap: 8,
   },
-  divider: { flex: 1, height: 1, backgroundColor: "#1f2937" },
-  dividerText: { color: "#9ca3af", fontSize: 12 },
+  divider: { flex: 1, height: 1, backgroundColor: BORDER_SOFT },
+  dividerText: { color: TEXT_MUTED, fontSize: 12 },
   socialRow: { flexDirection: "row", gap: 12 },
   socialButton: {
     flex: 1,
-    backgroundColor: "#f9fafb",
+    backgroundColor: SURFACE,
     borderRadius: 12,
     height: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
   },
-  socialText: { fontSize: 14, fontWeight: "600", color: "#0f172a" },
-  footerText: {
+  socialText: { fontSize: 14, fontWeight: "600", color: TEXT_PRIMARY },
+  footerContainer: {
     marginTop: 24,
-    textAlign: "center",
-    color: "#9ca3af",
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  footerText: {
+    color: TEXT_MUTED,
     fontSize: 12,
   },
-  footerLink: { color: PRIMARY, fontWeight: "700" },
+  footerLink: { color: PRIMARY, fontWeight: "700", fontSize: 12 },
 });

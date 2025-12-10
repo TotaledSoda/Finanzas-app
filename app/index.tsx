@@ -1,6 +1,19 @@
 // app/index.tsx
-import { Redirect } from "expo-router";
+import React from "react";
+import { View, ActivityIndicator } from "react-native";
 
 export default function Index() {
-  return <Redirect href="/(tabs)" />;
+  // Pantalla “dummy” mientras RootNavigator decide a dónde ir
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: "#f7f7f7ff",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <ActivityIndicator size="large" color="#000000ff" />
+    </View>
+  );
 }

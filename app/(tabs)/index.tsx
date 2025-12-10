@@ -1,5 +1,5 @@
-// app/(tabs)/index.tsx
-import React, { useEffect, useState, useMemo } from "react";
+
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
   View,
   Text,
@@ -7,14 +7,36 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  TextInput,
+  Alert,
+  Modal,
 } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { api } from "../../src/api/client";
+import { useFocusEffect } from "@react-navigation/native";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 
-const PRIMARY = "#13ec5b";
-const BG_DARK = "#020617";
-const SURFACE = "#020617";
+
+// Paleta que inspira confianza (azules profundos, acentos teal suaves)
+const PRIMARY = "#084D6E"; // azul principal
+const BG_DARK = "#d9e1e9ff"; // fondo claro y sereno
+const SURFACE = "#FFFFFF"; // tarjetas
+const TEXT_PRIMARY = "#072A4A"; // texto principal, azul oscuro
+const TEXT_MUTED = "#59708B"; // texto secundario, gris azulado
+const BORDER_SOFT = "#E6EEF7"; // bordes sutiles
+const AVATAR_BG = PRIMARY;
+const ICON_BG = "#0B2740"; // fondo de iconos redondos
+const INPUT_BG = "#F0F5FB"; // fondo input suave
+const BUTTON_TEXT = "#FFFFFF";
+const PROGRESS_BG = "#EAF2FF"; // fondo barra de progreso
+const ICON_ACCENT = "#2DD4BF"; // acento teal para algunos iconos
+const CHANGE_POS = "#16A34A"; // verde positivo
+const CHANGE_NEG = "#DC2626"; // rojo negativo
+
+type IncomeFrequency = "weekly" | "biweekly" | "monthly";
+
+// ====== Tipos alineados al backend ====== //
 
 type SavingGoal = {
   id: number;
@@ -33,32 +55,70 @@ type Bill = {
   status?: "pending" | "paid" | string;
 };
 
+type BudgetEnvelope = {
+  id: number;
+  name: string;
+  allocated: number;
+  spent: number;
+  remaining: number;
+};
+
 type DashboardResponse = {
   user?: {
     name?: string | null;
   };
-  totals?: {
-    total_savings?: number | null;
-    monthly_change_percent?: number | null;
+  savings?: {
+    total?: number | null;
+    monthly_change?: number | null;
+  };
+  bills?: {
+    pending_count?: number | null;
+    paid_this_month?: number | null;
+    next?: Bill[];
   };
   goals?: SavingGoal[];
-  upcoming_bills?: Bill[];
+  tandas?: {
+    active_count?: number | null;
+    next_payment?: {
+      id: number;
+      name: string;
+      next_payment_date?: string | null;
+      contribution_amount?: number | null;
+    } | null;
+  };
+  calendar?: {
+    upcoming_events?: {
+      id: number;
+      title: string;
+      date: string;
+      type: string;
+      amount?: number | null;
+    }[];
+    daily_expenses?: {
+      date: string;
+      total: number;
+    }[];
+  };
+  income?: {
+    weekly_income?: number | null;
+    spent_this_week?: number | null;
+    available_this_week?: number | null; // puede venir negativo
+    // 👇 nuevos campos para manejar frecuencia
+    base_amount?: number | null;
+    frequency?: IncomeFrequency | null;
+    payday_weekday?: string | null;
+  };
+  // 👇 nuevo a nivel raíz (como lo espera el frontend)
+  envelopes?: BudgetEnvelope[];
 };
 
 function formatAmount(raw?: number | null) {
-  const amount =
-    typeof raw === "number" && !isNaN(raw) ? raw : 0;
+  const amount = typeof raw === "number" && !isNaN(raw) ? raw : 0;
 
   return amount.toLocaleString("es-MX", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-}
-
-function formatPercent(raw?: number | null) {
-  const n =
-    typeof raw === "number" && !isNaN(raw) ? raw : 0;
-  return `${n.toFixed(1)}%`;
 }
 
 function formatDate(dateString?: string | null) {
@@ -78,28 +138,81 @@ export default function DashboardScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const goals = useMemo(
-    () => data?.goals ?? [],
-    [data]
-  );
-  const upcomingBills = useMemo(
-    () => data?.upcoming_bills ?? [],
-    [data]
+  // ingreso (input) y frecuencia
+  const [incomeInput, setIncomeInput] = useState<string>("");
+  const [incomeFrequency, setIncomeFrequency] =
+    useState<IncomeFrequency>("weekly");
+  const [savingIncome, setSavingIncome] = useState(false);
+
+  // botón cubrir déficit
+  const [coveringDeficit, setCoveringDeficit] = useState(false);
+  const [goalPickerVisible, setGoalPickerVisible] = useState(false);
+
+  const goals = useMemo(() => data?.goals ?? [], [data]);
+
+  // metas con saldo disponible
+  const goalsWithBalance = useMemo(
+    () =>
+      goals.filter(
+        (g) =>
+          typeof g.current_amount === "number" &&
+          !isNaN(g.current_amount) &&
+          (g.current_amount ?? 0) > 0
+      ),
+    [goals]
   );
 
-  const totalSavings = data?.totals?.total_savings ?? 0;
-  const monthlyChange =
-    data?.totals?.monthly_change_percent ?? 0;
-  const userName = data?.user?.name ?? "Usuario";
+  const upcomingBills = useMemo(() => data?.bills?.next ?? [], [data]);
+
+  // sobres / apartados de la semana
+  const envelopes = useMemo(() => data?.envelopes ?? [], [data]);
+  const envelopesToShow = useMemo(() => envelopes.slice(0, 2), [envelopes]);
+
+  // Totales del backend
+  const totalSavings = data?.savings?.total ?? 0;
+  const monthlyChange = data?.savings?.monthly_change ?? 0;
+
+  // Nombre real del usuario con fallback
+  const rawName = data?.user?.name ?? "";
+  const userName = rawName.trim().length > 0 ? rawName : "";
+  const firstName = userName.split(" ")[0];
+
+  const spentThisWeek = data?.income?.spent_this_week ?? 0;
+  const availableThisWeek = data?.income?.available_this_week ?? 0;
+
+  // déficit
+  const isDeficit = availableThisWeek < 0;
+  const deficit = Math.abs(availableThisWeek);
+
+  // formulario para crear sobre
+  const [envelopeName, setEnvelopeName] = useState("");
+  const [envelopeAmount, setEnvelopeAmount] = useState("");
+  const [savingEnvelope, setSavingEnvelope] = useState(false);
+
+  // registrar gasto en sobre
+  const [envelopeModalVisible, setEnvelopeModalVisible] = useState(false);
+  const [selectedEnvelope, setSelectedEnvelope] =
+    useState<BudgetEnvelope | null>(null);
+  const [envelopeSpendAmount, setEnvelopeSpendAmount] = useState("");
+  const [envelopeSpendDesc, setEnvelopeSpendDesc] = useState("");
+  const [savingEnvelopeSpend, setSavingEnvelopeSpend] = useState(false);
+
+  // 🔵 ingreso extra
+  const [extraIncomeModalVisible, setExtraIncomeModalVisible] = useState(false);
+  const [extraIncomeAmount, setExtraIncomeAmount] = useState("");
+  const [savingExtraIncome, setSavingExtraIncome] = useState(false);
+
+  // 🔴 eliminar / reembolsar sobres
+  const [deletingEnvelopeId, setDeletingEnvelopeId] = useState<number | null>(
+    null
+  );
 
   const loadDashboard = async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // Ajusta si tu endpoint es otro
       const res = await api.get<DashboardResponse>("/dashboard");
-
       setData(res.data || {});
     } catch (e: any) {
       console.log("Error cargando dashboard:", e?.response?.data || e);
@@ -109,9 +222,30 @@ export default function DashboardScreen() {
     }
   };
 
+
+  useFocusEffect(
+    useCallback(() => {
+      loadDashboard();
+    }, [])
+  );
+
+  // Cuando llegue el dashboard, llenamos el input con el sueldo base y frecuencia
   useEffect(() => {
-    loadDashboard();
-  }, []);
+    if (data?.income) {
+      const inc = data.income;
+
+      if (inc.base_amount != null) {
+        setIncomeInput(inc.base_amount.toFixed(2));
+      } else if (inc.weekly_income != null) {
+        // fallback por si aún no guardas base_amount
+        setIncomeInput(inc.weekly_income.toFixed(2));
+      }
+
+      if (inc.frequency) {
+        setIncomeFrequency(inc.frequency as IncomeFrequency);
+      }
+    }
+  }, [data?.income]);
 
   const handleNewSaving = () => {
     router.push("/(tabs)/goals");
@@ -121,40 +255,308 @@ export default function DashboardScreen() {
     router.push("/(tabs)/bills");
   };
 
+  const handleSaveIncome = async () => {
+    const parsed = parseFloat(incomeInput.replace(/,/g, "").trim());
+
+    if (isNaN(parsed) || parsed < 0) {
+      Alert.alert("Dato inválido", "Ingresa un sueldo válido.");
+      return;
+    }
+
+    try {
+      setSavingIncome(true);
+
+      // 🔵 ahora usamos income-settings con frecuencia
+      await api.post("/dashboard/income-settings", {
+        amount: parsed,
+        frequency: incomeFrequency,
+        // opcional: payday_weekday si luego agregas UI para día de pago
+      });
+
+      await loadDashboard();
+    } catch (e: any) {
+      console.log("Error guardando ingreso:", e?.response?.data || e);
+      Alert.alert("Error", "No se pudo guardar el sueldo. Inténtalo de nuevo.");
+    } finally {
+      setSavingIncome(false);
+    }
+  };
+
+  // 🔵 abrir modal de ingreso extra
+  const openExtraIncomeModal = () => {
+    setExtraIncomeAmount("");
+    setExtraIncomeModalVisible(true);
+  };
+
+  const closeExtraIncomeModal = () => {
+    setExtraIncomeModalVisible(false);
+  };
+
+  const handleSaveExtraIncome = async () => {
+    const parsed = parseFloat(extraIncomeAmount.replace(/,/g, "").trim());
+
+    if (isNaN(parsed) || parsed <= 0) {
+      Alert.alert("Monto inválido", "Ingresa un monto de ingreso extra válido.");
+      return;
+    }
+
+    try {
+      setSavingExtraIncome(true);
+
+      await api.post("/dashboard/extra-income", {
+        amount: parsed,
+      });
+
+      setExtraIncomeModalVisible(false);
+      await loadDashboard();
+    } catch (e: any) {
+      console.log("Error agregando ingreso extra:", e?.response?.data || e);
+      Alert.alert(
+        "Error",
+        e?.response?.data?.message || "No se pudo registrar el ingreso extra."
+      );
+    } finally {
+      setSavingExtraIncome(false);
+    }
+  };
+
+  const handleCreateEnvelope = async () => {
+    if (!envelopeName || !envelopeAmount) {
+      Alert.alert("Faltan datos", "Escribe un nombre y un monto para el apartado.");
+      return;
+    }
+
+    const parsed = parseFloat(envelopeAmount.replace(/,/g, "").trim());
+    if (isNaN(parsed) || parsed <= 0) {
+      Alert.alert("Monto inválido", "Ingresa un monto numérico válido.");
+      return;
+    }
+
+    try {
+      setSavingEnvelope(true);
+      await api.post("/dashboard/envelopes", {
+        name: envelopeName,
+        allocated: parsed,
+      });
+      setEnvelopeName("");
+      setEnvelopeAmount("");
+      await loadDashboard();
+    } catch (e: any) {
+      console.log("Error creando sobre:", e?.response?.data || e);
+      Alert.alert(
+        "Error",
+        e?.response?.data?.message || "No se pudo crear el apartado."
+      );
+    } finally {
+      setSavingEnvelope(false);
+    }
+  };
+
+  const openEnvelopeSpendModal = (env: BudgetEnvelope) => {
+    setSelectedEnvelope(env);
+    setEnvelopeSpendAmount("");
+    setEnvelopeSpendDesc("");
+    setEnvelopeModalVisible(true);
+  };
+
+  const closeEnvelopeSpendModal = () => {
+    setEnvelopeModalVisible(false);
+  };
+
+  const handleEnvelopeSpend = async () => {
+    if (!selectedEnvelope) return;
+
+    const parsed = parseFloat(envelopeSpendAmount.replace(/,/g, "").trim());
+    if (isNaN(parsed) || parsed <= 0) {
+      Alert.alert("Monto inválido", "Ingresa un monto numérico válido.");
+      return;
+    }
+
+    try {
+      setSavingEnvelopeSpend(true);
+
+      await api.post(`/dashboard/envelopes/${selectedEnvelope.id}/spend`, {
+        amount: parsed,
+        description: envelopeSpendDesc || undefined,
+      });
+
+      setEnvelopeModalVisible(false);
+      setSelectedEnvelope(null);
+      await loadDashboard();
+    } catch (e: any) {
+      console.log("Error registrando gasto en sobre:", e?.response?.data || e);
+      Alert.alert(
+        "Error",
+        e?.response?.data?.message || "No se pudo registrar el gasto."
+      );
+    } finally {
+      setSavingEnvelopeSpend(false);
+    }
+  };
+
+  // 🔴 Long press en sobre: reembolso / eliminar
+  const handleEnvelopeLongPress = (env: BudgetEnvelope) => {
+    Alert.alert(
+      "Opciones del apartado",
+      `¿Qué deseas hacer con "${env.name}"?\n\nRestante: $${formatAmount(
+        env.remaining
+      )}`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Eliminar sin reembolso",
+          style: "destructive",
+          onPress: () => deleteEnvelopeNoRefund(env.id),
+        },
+        {
+          text: "Reembolsar y eliminar",
+          onPress: () => deleteEnvelopeRefund(env.id),
+        },
+      ]
+    );
+  };
+
+  const deleteEnvelopeRefund = async (id: number) => {
+    try {
+      setDeletingEnvelopeId(id);
+      await api.delete(`/dashboard/envelopes/${id}/refund`);
+      await loadDashboard();
+    } catch (e: any) {
+      console.log("Error eliminando apartado (refund):", e?.response?.data || e);
+      Alert.alert(
+        "Error",
+        e?.response?.data?.message ||
+          "No se pudo eliminar el apartado con reembolso."
+      );
+    } finally {
+      setDeletingEnvelopeId(null);
+    }
+  };
+
+  const deleteEnvelopeNoRefund = async (id: number) => {
+    try {
+      setDeletingEnvelopeId(id);
+      await api.delete(`/dashboard/envelopes/${id}/delete`);
+      await loadDashboard();
+    } catch (e: any) {
+      console.log(
+        "Error eliminando apartado (no refund):",
+        e?.response?.data || e
+      );
+      Alert.alert(
+        "Error",
+        e?.response?.data?.message ||
+          "No se pudo eliminar el apartado sin reembolso."
+      );
+    } finally {
+      setDeletingEnvelopeId(null);
+    }
+  };
+
+  /**
+   * Lógica para cubrir déficit
+   */
+  const handleCoverDeficit = () => {
+    if (!isDeficit) return;
+
+    if (goalsWithBalance.length === 0) {
+      Alert.alert(
+        "Sin ahorro disponible",
+        "No tienes metas con saldo disponible para cubrir el déficit."
+      );
+      return;
+    }
+
+    if (goalsWithBalance.length === 1) {
+      const goal = goalsWithBalance[0];
+      confirmCoverWithGoal(goal);
+      return;
+    }
+
+    // varias metas → mostramos modal
+    setGoalPickerVisible(true);
+  };
+
+  const confirmCoverWithGoal = (goal: SavingGoal) => {
+    Alert.alert(
+      "Usar ahorro",
+      `Vas a usar hasta $${formatAmount(
+        deficit
+      )} de tu meta "${goal.name}" para cubrir el déficit de esta semana (si el saldo alcanza).`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Confirmar",
+          style: "destructive",
+          onPress: () => doCoverDeficit(goal.id),
+        },
+      ]
+    );
+  };
+
+  const doCoverDeficit = async (goalId?: number) => {
+    if (!isDeficit) return;
+
+    try {
+      setCoveringDeficit(true);
+
+      const payload: any = {};
+      if (goalId) {
+        payload.saving_goal_id = goalId;
+      }
+
+      await api.post("/dashboard/cover-deficit-from-savings", payload);
+
+      setGoalPickerVisible(false);
+      await loadDashboard();
+    } catch (e: any) {
+      console.log("Error cubriendo déficit:", e?.response?.data || e);
+      Alert.alert(
+        "Error",
+        e?.response?.data?.message ||
+          "No se pudo cubrir el déficit con tu ahorro."
+      );
+    } finally {
+      setCoveringDeficit(false);
+    }
+  };
+
   return (
-    <View style={styles.safe}>
+    <SafeAreaView style={styles.safe}>
       <View style={styles.container}>
         {/* Top bar */}
         <View style={styles.header}>
-          <View style={styles.headerLeft}>
+          <TouchableOpacity
+            style={styles.headerLeft}
+            activeOpacity={0.8}
+            onPress={() => router.push("/account")}
+          >
             <View style={styles.avatar}>
               <Text style={styles.avatarInitial}>
                 {userName.charAt(0).toUpperCase()}
               </Text>
             </View>
             <View>
-              <Text style={styles.helloText}>
-                Hola, {userName.split(" ")[0]}!
-              </Text>
+              <Text style={styles.helloText}>Hola, {firstName}!</Text>
               <Text style={styles.subHelloText}>
-                Resumen financiero
+                Toca aquí para ver tu cuenta
               </Text>
             </View>
-          </View>
+          </TouchableOpacity>
+
           <View style={styles.headerRight}>
             <TouchableOpacity style={styles.iconButton}>
               <MaterialIcons
                 name="notifications"
                 size={20}
-                color="#e5e7eb"
+                color={BUTTON_TEXT}
               />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.iconButton}>
-              <MaterialIcons
-                name="settings"
-                size={20}
-                color="#e5e7eb"
-              />
+            <TouchableOpacity
+              style={styles.iconButton}
+              onPress={() => router.push("/settings")}
+            >
+              <MaterialIcons name="settings" size={20} color={BUTTON_TEXT} />
             </TouchableOpacity>
           </View>
         </View>
@@ -162,215 +564,589 @@ export default function DashboardScreen() {
         {loading ? (
           <View style={styles.centerFill}>
             <ActivityIndicator size="large" color={PRIMARY} />
-            <Text style={styles.loadingText}>
-              Cargando dashboard...
-            </Text>
+            <Text style={styles.loadingText}>Cargando dashboard...</Text>
           </View>
         ) : error ? (
           <View style={styles.centerFill}>
             <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity
-              style={styles.retryButton}
-              onPress={loadDashboard}
-            >
+            <TouchableOpacity style={styles.retryButton} onPress={loadDashboard}>
               <Text style={styles.retryText}>Reintentar</Text>
             </TouchableOpacity>
           </View>
         ) : (
-          <ScrollView
-            style={{ flex: 1 }}
-            contentContainerStyle={{
-              paddingBottom: 96,
-            }}
-          >
-            {/* Tarjeta de Ahorro Total */}
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>
-                Ahorro total
-              </Text>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryAmount}>
-                  ${formatAmount(totalSavings)}
-                </Text>
-                <View style={styles.changeBadge}>
-                  <MaterialIcons
-                    name={
-                      monthlyChange >= 0
-                        ? "trending-up"
-                        : "trending-down"
-                    }
-                    size={18}
-                    color={
-                      monthlyChange >= 0
-                        ? "#22c55e"
-                        : "#ef4444"
-                    }
+          <>
+            <ScrollView
+              style={{ flex: 1 }}
+              contentContainerStyle={{
+                paddingBottom: 96,
+              }}
+            >
+              {/* Tarjeta de ingreso */}
+              <View style={styles.incomeCard}>
+                <Text style={styles.sectionTitle}>Tu ingreso</Text>
+
+                {/* Chips de frecuencia */}
+                <View style={styles.freqRow}>
+                  {[
+                    { key: "weekly", label: "Semanal" },
+                    { key: "biweekly", label: "Quincenal" },
+                    { key: "monthly", label: "Mensual" },
+                  ].map((opt) => (
+                    <TouchableOpacity
+                      key={opt.key}
+                      onPress={() =>
+                        setIncomeFrequency(opt.key as IncomeFrequency)
+                      }
+                      style={[
+                        styles.freqChip,
+                        incomeFrequency === opt.key && styles.freqChipActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.freqChipText,
+                          incomeFrequency === opt.key &&
+                            styles.freqChipTextActive,
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <View style={styles.incomeRow}>
+                  <TextInput
+                    style={styles.incomeInput}
+                    keyboardType="numeric"
+                    value={incomeInput}
+                    onChangeText={setIncomeInput}
+                    placeholder="0.00"
+                    placeholderTextColor={TEXT_MUTED}
                   />
+
+                  {/* 🔵 Botón ingreso extra */}
+                  <TouchableOpacity
+                    style={styles.incomeExtraButton}
+                    onPress={openExtraIncomeModal}
+                    disabled={savingExtraIncome}
+                  >
+                    <MaterialIcons
+                      name="add-circle-outline"
+                      size={18}
+                      color={PRIMARY}
+                    />
+                    <Text style={styles.incomeExtraText}>Ingreso extra</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.incomeSaveButton}
+                    onPress={handleSaveIncome}
+                    disabled={savingIncome}
+                  >
+                    {savingIncome ? (
+                      <ActivityIndicator size="small" color={BUTTON_TEXT} />
+                    ) : (
+                      <Text style={styles.incomeSaveText}>Guardar</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.incomeAvailable}>
+                  Gastado esta semana:{" "}
+                  <Text style={styles.incomeAvailableAmount}>
+                    ${formatAmount(spentThisWeek)}
+                  </Text>
+                </Text>
+                <Text style={styles.incomeAvailable}>
+                  Disponible esta semana:{" "}
                   <Text
                     style={[
-                      styles.changeText,
-                      monthlyChange >= 0
-                        ? { color: "#22c55e" }
-                        : { color: "#f97373" },
+                      styles.incomeAvailableAmount,
+                      isDeficit && { color: CHANGE_NEG },
                     ]}
                   >
-                    {formatPercent(monthlyChange)} este mes
+                    ${formatAmount(availableThisWeek)}
+                  </Text>
+                </Text>
+
+                {/* Botón para cubrir déficit con ahorro */}
+                {isDeficit && totalSavings > 0 && (
+                  <TouchableOpacity
+                    style={styles.deficitButton}
+                    onPress={handleCoverDeficit}
+                    activeOpacity={0.8}
+                    disabled={coveringDeficit}
+                  >
+                    {coveringDeficit ? (
+                      <ActivityIndicator size="small" color={BUTTON_TEXT} />
+                    ) : (
+                      <>
+                        <MaterialIcons
+                          name="savings"
+                          size={18}
+                          color={BUTTON_TEXT}
+                        />
+                        <Text style={styles.deficitButtonText}>
+                          Usar ${formatAmount(deficit)} de mi ahorro
+                        </Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
+
+                {isDeficit && totalSavings <= 0 && (
+                  <Text style={styles.deficitWarning}>
+                    Estás en números rojos y no tienes ahorro disponible para
+                    cubrirlo.
+                  </Text>
+                )}
+              </View>
+
+              {/* 🔵 Apartados / sobres de gasto de la semana */}
+              <View style={styles.envelopesCard}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <View>
+                    <Text style={styles.sectionTitle}>Apartados de la semana</Text>
+                    {envelopes.length > 0 && (
+                      <Text style={styles.envelopesCountText}>
+                        {envelopes.length} apartado(s)
+                      </Text>
+                    )}
+                  </View>
+
+                  {envelopes.length > 2 && (
+                    <TouchableOpacity
+                      onPress={() => router.push("/envelopes")}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={styles.viewAllText}>Ver todos</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Formulario para crear nuevo apartado */}
+                <View style={styles.envelopeFormRow}>
+                  <TextInput
+                    style={[styles.envelopeInput, { flex: 1 }]}
+                    placeholder="Ej. Comida"
+                    placeholderTextColor={TEXT_MUTED}
+                    value={envelopeName}
+                    onChangeText={setEnvelopeName}
+                  />
+                  <TextInput
+                    style={[styles.envelopeInput, { width: 90, marginLeft: 6 }]}
+                    placeholder="1000"
+                    placeholderTextColor={TEXT_MUTED}
+                    keyboardType="numeric"
+                    value={envelopeAmount}
+                    onChangeText={setEnvelopeAmount}
+                  />
+                  <TouchableOpacity
+                    style={styles.envelopeAddButton}
+                    onPress={handleCreateEnvelope}
+                    disabled={savingEnvelope}
+                  >
+                    {savingEnvelope ? (
+                      <ActivityIndicator size="small" color={BUTTON_TEXT} />
+                    ) : (
+                      <MaterialIcons name="add" size={20} color={BUTTON_TEXT} />
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                {/* Lista de sobres (máx. 2) */}
+                {envelopes.length === 0 ? (
+                  <Text style={styles.emptyText}>
+                    Crea apartados para repartir tu sueldo (ej. comida,
+                    transporte, ocio).
+                  </Text>
+                ) : (
+                  envelopesToShow.map((env) => {
+                    const progress =
+                      env.allocated > 0
+                        ? Math.min(
+                            100,
+                            Math.max(0, (env.spent / env.allocated) * 100)
+                          )
+                        : 0;
+
+                    const isDeleting = deletingEnvelopeId === env.id;
+
+                    return (
+                      <TouchableOpacity
+                        key={env.id}
+                        style={styles.envelopeRow}
+                        activeOpacity={1}
+                        onLongPress={() => handleEnvelopeLongPress(env)}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.envelopeTitle}>{env.name}</Text>
+                          <Text style={styles.envelopeSubtitle}>
+                            Gastado: ${formatAmount(env.spent)} / $
+                            {formatAmount(env.allocated)} · Restante: $
+                            {formatAmount(env.remaining)}
+                          </Text>
+                          <View style={styles.progressBarBg}>
+                            <View
+                              style={[
+                                styles.progressBarFill,
+                                { width: `${progress}%` },
+                              ]}
+                            />
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={styles.envelopeSpendButton}
+                          onPress={() => openEnvelopeSpendModal(env)}
+                          disabled={isDeleting}
+                        >
+                          {isDeleting ? (
+                            <ActivityIndicator size="small" color={BUTTON_TEXT} />
+                          ) : (
+                            <MaterialIcons
+                              name="payments"
+                              size={18}
+                              color={BUTTON_TEXT}
+                            />
+                          )}
+                        </TouchableOpacity>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </View>
+
+              {/* Tarjeta de Ahorro Total */}
+              <View style={styles.summaryCard}>
+                <Text style={styles.summaryLabel}>Ahorro total</Text>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryAmount}>
+                    ${formatAmount(totalSavings)}
+                  </Text>
+                  <View style={styles.changeBadge}>
+                    <MaterialIcons
+                      name={monthlyChange >= 0 ? "trending-up" : "trending-down"}
+                      size={18}
+                      color={monthlyChange >= 0 ? CHANGE_POS : CHANGE_NEG}
+                    />
+                    <Text
+                      style={[
+                        styles.changeText,
+                        { color: monthlyChange >= 0 ? CHANGE_POS : CHANGE_NEG },
+                      ]}
+                    >
+                      ${formatAmount(monthlyChange)} este mes
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.summaryNote}>
+                  Sigue aportando de forma constante para alcanzar tus metas.
+                </Text>
+              </View>
+
+              {/* Acciones rápidas */}
+              <Text style={styles.sectionTitle}>Acciones rápidas</Text>
+              <View style={styles.quickRow}>
+                <TouchableOpacity
+                  style={styles.quickButtonPrimary}
+                  onPress={handleNewSaving}
+                >
+                  <MaterialIcons name="savings" size={20} color={BUTTON_TEXT} />
+                  <Text style={styles.quickPrimaryText}>Nueva meta</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickButtonSecondary}
+                  onPress={handleNewBill}
+                >
+                  <MaterialIcons
+                    name="receipt-long"
+                    size={20}
+                    color={TEXT_MUTED}
+                  />
+                  <Text style={styles.quickSecondaryText}>Nuevo pago</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Mis metas */}
+              <Text style={styles.sectionTitle}>Mis metas</Text>
+              {goals.length === 0 ? (
+                <View style={styles.emptyRow}>
+                  <Text style={styles.emptyText}>
+                    Aún no tienes metas creadas.
                   </Text>
                 </View>
-              </View>
-              <Text style={styles.summaryNote}>
-                Sigue aportando de forma constante para
-                alcanzar tus metas.
-              </Text>
-            </View>
+              ) : (
+                goals.slice(0, 3).map((goal) => {
+                  const current =
+                    typeof goal.current_amount === "number"
+                      ? goal.current_amount
+                      : 0;
+                  const target =
+                    typeof goal.target_amount === "number"
+                      ? goal.target_amount
+                      : 0;
+                  const progress =
+                    target > 0
+                      ? Math.min(
+                          100,
+                          Math.max(0, (current / target) * 100)
+                        )
+                      : 0;
 
-            {/* Acciones rápidas */}
-            <Text style={styles.sectionTitle}>
-              Acciones rápidas
-            </Text>
-            <View style={styles.quickRow}>
-              <TouchableOpacity
-                style={styles.quickButtonPrimary}
-                onPress={handleNewSaving}
-              >
-                <MaterialIcons
-                  name="savings"
-                  size={20}
-                  color="#020617"
-                />
-                <Text style={styles.quickPrimaryText}>
-                  Nueva meta
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.quickButtonSecondary}
-                onPress={handleNewBill}
-              >
-                <MaterialIcons
-                  name="receipt-long"
-                  size={20}
-                  color="#e5e7eb"
-                />
-                <Text style={styles.quickSecondaryText}>
-                  Nuevo pago
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Mis metas */}
-            <Text style={styles.sectionTitle}>Mis metas</Text>
-            {goals.length === 0 ? (
-              <View style={styles.emptyRow}>
-                <Text style={styles.emptyText}>
-                  Aún no tienes metas creadas.
-                </Text>
-              </View>
-            ) : (
-              goals.slice(0, 3).map((goal) => {
-                const current =
-                  typeof goal.current_amount === "number"
-                    ? goal.current_amount
-                    : 0;
-                const target =
-                  typeof goal.target_amount === "number"
-                    ? goal.target_amount
-                    : 0;
-                const progress =
-                  target > 0
-                    ? Math.min(
-                        100,
-                        Math.max(0, (current / target) * 100)
-                      )
-                    : 0;
-
-                return (
-                  <View
-                    key={goal.id}
-                    style={styles.goalCard}
-                  >
-                    <View style={styles.goalRow}>
-                      <View>
-                        <Text style={styles.goalTitle}>
-                          {goal.name}
-                        </Text>
-                        <Text
-                          style={styles.goalSubtitle}
-                          numberOfLines={1}
-                        >
-                          {goal.deadline
-                            ? `Fecha límite: ${formatDate(
-                                goal.deadline
-                              )}`
-                            : "Sin fecha límite"}
+                  return (
+                    <View key={goal.id} style={styles.goalCard}>
+                      <View style={styles.goalRow}>
+                        <View>
+                          <Text style={styles.goalTitle}>{goal.name}</Text>
+                          <Text style={styles.goalSubtitle} numberOfLines={1}>
+                            {goal.deadline
+                              ? `Fecha límite: ${formatDate(goal.deadline)}`
+                              : "Sin fecha límite"}
+                          </Text>
+                        </View>
+                        <Text style={styles.goalAmount}>
+                          ${formatAmount(current)}{" "}
+                          <Text style={styles.goalAmountSub}>
+                            / ${formatAmount(target)}
+                          </Text>
                         </Text>
                       </View>
-                      <Text style={styles.goalAmount}>
-                        ${formatAmount(current)}{" "}
-                        <Text style={styles.goalAmountSub}>
-                          / ${formatAmount(target)}
-                        </Text>
-                      </Text>
+                      <View style={styles.progressBarBg}>
+                        <View
+                          style={[
+                            styles.progressBarFill,
+                            { width: `${progress}%` },
+                          ]}
+                        />
+                      </View>
                     </View>
-                    <View style={styles.progressBarBg}>
-                      <View
-                        style={[
-                          styles.progressBarFill,
-                          { width: `${progress}%` },
-                        ]}
-                      />
-                    </View>
-                  </View>
-                );
-              })
-            )}
+                  );
+                })
+              )}
 
-            {/* Próximos vencimientos */}
-            <Text style={styles.sectionTitle}>
-              Próximos vencimientos
-            </Text>
-            {upcomingBills.length === 0 ? (
-              <View style={styles.emptyRow}>
-                <Text style={styles.emptyText}>
-                  No tienes pagos próximos.
-                </Text>
-              </View>
-            ) : (
-              upcomingBills.slice(0, 4).map((bill) => (
-                <View
-                  key={bill.id}
-                  style={styles.billRow}
-                >
-                  <View style={styles.billLeft}>
-                    <View style={styles.billIconWrapper}>
-                      <MaterialIcons
-                        name="receipt-long"
-                        size={18}
-                        color="#facc15"
-                      />
-                    </View>
-                    <View>
-                      <Text style={styles.billName}>
-                        {bill.name}
-                      </Text>
-                      <Text style={styles.billSubtitle}>
-                        {formatDate(bill.due_date)} ·{" "}
-                        {bill.status === "paid"
-                          ? "Pagado"
-                          : "Pendiente"}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={styles.billAmount}>
-                    ${formatAmount(bill.amount)}
+              {/* Próximos vencimientos */}
+              <Text style={styles.sectionTitle}>Próximos vencimientos</Text>
+              {upcomingBills.length === 0 ? (
+                <View style={styles.emptyRow}>
+                  <Text style={styles.emptyText}>
+                    No tienes pagos próximos.
                   </Text>
                 </View>
-              ))
-            )}
-          </ScrollView>
+              ) : (
+                upcomingBills.slice(0, 4).map((bill) => (
+                  <View key={bill.id} style={styles.billRow}>
+                    <View style={styles.billLeft}>
+                      <View style={styles.billIconWrapper}>
+                        <MaterialIcons
+                          name="receipt-long"
+                          size={18}
+                          color={ICON_ACCENT}
+                        />
+                      </View>
+                      <View>
+                        <Text style={styles.billName}>{bill.name}</Text>
+                        <Text style={styles.billSubtitle}>
+                          {formatDate(bill.due_date)} ·{" "}
+                          {bill.status === "paid" ? "Pagado" : "Pendiente"}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.billAmount}>
+                      ${formatAmount(bill.amount)}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+
+            {/* Modal para elegir meta de ahorro cuando hay varias */}
+            <Modal
+              visible={goalPickerVisible}
+              animationType="slide"
+              transparent
+              onRequestClose={() => setGoalPickerVisible(false)}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.modalCard}>
+                  <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>
+                      Elige una meta para usar ahorro
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => setGoalPickerVisible(false)}
+                    >
+                      <MaterialIcons
+                        name="close"
+                        size={22}
+                        color={TEXT_MUTED}
+                      />
+                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={styles.modalSubtitle}>
+                    Déficit actual: ${formatAmount(deficit)}
+                    {"\n"}
+                    Selecciona de cuál meta quieres descontar.
+                  </Text>
+
+                  <ScrollView
+                    style={{ maxHeight: 260, marginTop: 8 }}
+                    contentContainerStyle={{ paddingBottom: 12 }}
+                  >
+                    {goalsWithBalance.map((goal) => (
+                      <TouchableOpacity
+                        key={goal.id}
+                        style={styles.goalRowModal}
+                        onPress={() => confirmCoverWithGoal(goal)}
+                        disabled={coveringDeficit}
+                      >
+                        <View>
+                          <Text style={styles.goalTitle}>{goal.name}</Text>
+                          <Text style={styles.goalSubtitle}>
+                            Saldo disponible: $
+                            {formatAmount(goal.current_amount ?? 0)}
+                          </Text>
+                        </View>
+                        <MaterialIcons
+                          name="arrow-forward-ios"
+                          size={16}
+                          color={TEXT_MUTED}
+                        />
+                      </TouchableOpacity>
+                    ))}
+                    {goalsWithBalance.length === 0 && (
+                      <Text style={styles.emptyText}>
+                        No tienes metas con saldo disponible.
+                      </Text>
+                    )}
+                  </ScrollView>
+                </View>
+              </View>
+            </Modal>
+
+            {/* Modal para registrar gasto en un apartado */}
+            <Modal
+              visible={envelopeModalVisible}
+              animationType="slide"
+              transparent
+              onRequestClose={closeEnvelopeSpendModal}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.modalCard}>
+                  <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>
+                      {selectedEnvelope ? selectedEnvelope.name : "Apartado"}
+                    </Text>
+                    <TouchableOpacity onPress={closeEnvelopeSpendModal}>
+                      <MaterialIcons name="close" size={22} color={TEXT_MUTED} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {selectedEnvelope && (
+                    <Text style={styles.modalSubtitle}>
+                      Restante: ${formatAmount(selectedEnvelope.remaining)}
+                    </Text>
+                  )}
+
+                  <View style={{ marginTop: 10 }}>
+                    <Text style={styles.label}>Monto del gasto</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Ej. 250"
+                      placeholderTextColor={TEXT_MUTED}
+                      keyboardType="numeric"
+                      value={envelopeSpendAmount}
+                      onChangeText={setEnvelopeSpendAmount}
+                    />
+                  </View>
+
+                  <View style={{ marginTop: 10 }}>
+                    <Text style={styles.label}>Descripción (opcional)</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Ej. Súper de la semana"
+                      placeholderTextColor={TEXT_MUTED}
+                      value={envelopeSpendDesc}
+                      onChangeText={setEnvelopeSpendDesc}
+                    />
+                  </View>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.saveButton,
+                      savingEnvelopeSpend && { opacity: 0.7 },
+                    ]}
+                    onPress={handleEnvelopeSpend}
+                    disabled={savingEnvelopeSpend}
+                  >
+                    <Text style={styles.saveButtonText}>
+                      {savingEnvelopeSpend ? "Guardando..." : "Registrar gasto"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
+
+            {/* 🔵 Modal ingreso extra */}
+            <Modal
+              visible={extraIncomeModalVisible}
+              animationType="slide"
+              transparent
+              onRequestClose={closeExtraIncomeModal}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.modalCard}>
+                  <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>Ingreso extra</Text>
+                    <TouchableOpacity onPress={closeExtraIncomeModal}>
+                      <MaterialIcons name="close" size={22} color={TEXT_MUTED} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={styles.modalSubtitle}>
+                    Este monto se sumará a tu sueldo de la semana actual.
+                  </Text>
+
+                  <View style={{ marginTop: 10 }}>
+                    <Text style={styles.label}>Monto</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Ej. 500"
+                      placeholderTextColor={TEXT_MUTED}
+                      keyboardType="numeric"
+                      value={extraIncomeAmount}
+                      onChangeText={setExtraIncomeAmount}
+                    />
+                  </View>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.saveButton,
+                      savingExtraIncome && { opacity: 0.7 },
+                    ]}
+                    onPress={handleSaveExtraIncome}
+                    disabled={savingExtraIncome}
+                  >
+                    <Text style={styles.saveButtonText}>
+                      {savingExtraIncome ? "Guardando..." : "Agregar ingreso extra"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
+          </>
         )}
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -382,57 +1158,61 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     paddingHorizontal: 16,
-    paddingTop: 8,
+    paddingTop: 30,
   },
+
+  // HEADER
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 8,
+    marginBottom: 12,
   },
   headerLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
   },
   headerRight: {
     flexDirection: "row",
-    gap: 6,
+    gap: 8,
   },
   avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 999,
-    backgroundColor: "#111827",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#1f2937",
-  },
-  avatarInitial: {
-    color: "#e5e7eb",
-    fontWeight: "700",
-    fontSize: 16,
-  },
-  helloText: {
-    color: "#f9fafb",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  subHelloText: {
-    color: "#9ca3af",
-    fontSize: 12,
-  },
-  iconButton: {
     width: 36,
     height: 36,
     borderRadius: 999,
-    backgroundColor: "#020617",
+    backgroundColor: AVATAR_BG,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
+  avatarInitial: {
+    color: SURFACE,
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  helloText: {
+    color: TEXT_PRIMARY,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  subHelloText: {
+    color: TEXT_MUTED,
+    fontSize: 12,
+  },
+  iconButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: ICON_BG,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+  },
+
+  // ESTADOS
   centerFill: {
     flex: 1,
     alignItems: "center",
@@ -440,11 +1220,11 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: 8,
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 12,
   },
   errorText: {
-    color: "#f97373",
+    color: CHANGE_NEG,
     fontSize: 14,
     marginBottom: 8,
   },
@@ -461,16 +1241,132 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
 
+  // CARD SUELDO / INGRESO
+  incomeCard: {
+    backgroundColor: SURFACE,
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    marginBottom: 10,
+  },
+  incomeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 6,
+    gap: 8,
+  },
+  incomeInput: {
+    flex: 1,
+    backgroundColor: INPUT_BG,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    color: TEXT_PRIMARY,
+    fontSize: 14,
+  },
+  incomeSaveButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: PRIMARY,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  incomeSaveText: {
+    color: BUTTON_TEXT,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  // 🔵 botón ingreso extra
+  incomeExtraButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    backgroundColor: SURFACE,
+    gap: 4,
+  },
+  incomeExtraText: {
+    color: TEXT_PRIMARY,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
+  // chips de frecuencia
+  freqRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 4,
+  },
+  freqChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    backgroundColor: SURFACE,
+  },
+  freqChipActive: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+  freqChipText: {
+    fontSize: 11,
+    color: TEXT_PRIMARY,
+    fontWeight: "600",
+  },
+  freqChipTextActive: {
+    color: BUTTON_TEXT,
+  },
+
+  incomeAvailable: {
+    marginTop: 4,
+    color: TEXT_MUTED,
+    fontSize: 12,
+  },
+  incomeAvailableAmount: {
+    color: TEXT_PRIMARY,
+    fontWeight: "700",
+  },
+
+  deficitButton: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: CHANGE_NEG,
+    borderRadius: 10,
+    paddingVertical: 8,
+  },
+  deficitButtonText: {
+    color: BUTTON_TEXT,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  deficitWarning: {
+    marginTop: 6,
+    color: CHANGE_NEG,
+    fontSize: 11,
+  },
+
+  // CARD RESUMEN AHORRO
   summaryCard: {
     backgroundColor: SURFACE,
-    borderRadius: 16,
-    padding: 14,
+    borderRadius: 14,
+    padding: 12,
     borderWidth: 1,
-    borderColor: "#1f2937",
-    marginBottom: 12,
+    borderColor: BORDER_SOFT,
+    marginBottom: 10,
   },
   summaryLabel: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 12,
     marginBottom: 4,
   },
@@ -481,8 +1377,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   summaryAmount: {
-    color: "#f9fafb",
-    fontSize: 24,
+    color: TEXT_PRIMARY,
+    fontSize: 22,
     fontWeight: "800",
   },
   changeBadge: {
@@ -492,28 +1388,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: "#020617",
+    backgroundColor: "rgba(11,110,246,0.06)",
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: "rgba(11,110,246,0.15)",
   },
   changeText: {
     fontSize: 11,
     fontWeight: "600",
+    color: TEXT_PRIMARY,
   },
   summaryNote: {
-    color: "#6b7280",
+    color: TEXT_MUTED,
     fontSize: 11,
     marginTop: 4,
   },
 
+  // TÍTULOS SECCIÓN
   sectionTitle: {
-    color: "#e5e7eb",
-    fontSize: 15,
+    color: TEXT_PRIMARY,
+    fontSize: 14,
     fontWeight: "700",
     marginTop: 10,
-    marginBottom: 6,
+    marginBottom: 2,
   },
 
+  // ACCIONES RÁPIDAS
   quickRow: {
     flexDirection: "row",
     gap: 8,
@@ -523,7 +1422,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: PRIMARY,
     borderRadius: 12,
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: 10,
     flexDirection: "row",
     alignItems: "center",
@@ -531,35 +1430,36 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   quickPrimaryText: {
-    color: "#020617",
+    color: BUTTON_TEXT,
     fontSize: 13,
     fontWeight: "700",
   },
   quickButtonSecondary: {
     flex: 1,
-    backgroundColor: "#020617",
+    backgroundColor: "transparent",
     borderRadius: 12,
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   quickSecondaryText: {
-    color: "#e5e7eb",
+    color: TEXT_PRIMARY,
     fontSize: 13,
     fontWeight: "600",
   },
 
+  // METAS
   goalCard: {
     backgroundColor: SURFACE,
-    borderRadius: 14,
-    padding: 12,
+    borderRadius: 12,
+    padding: 10,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
     marginBottom: 8,
   },
   goalRow: {
@@ -569,31 +1469,31 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   goalTitle: {
-    color: "#f9fafb",
-    fontSize: 14,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
     fontWeight: "700",
   },
   goalSubtitle: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 11,
     marginTop: 2,
-    maxWidth: 180,
+    maxWidth: 220,
   },
   goalAmount: {
-    color: "#f9fafb",
-    fontSize: 14,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
     fontWeight: "700",
     textAlign: "right",
   },
   goalAmountSub: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 11,
     fontWeight: "400",
   },
   progressBarBg: {
     height: 6,
     borderRadius: 999,
-    backgroundColor: "#020617",
+    backgroundColor: PROGRESS_BG,
     marginTop: 4,
     overflow: "hidden",
   },
@@ -603,24 +1503,26 @@ const styles = StyleSheet.create({
     backgroundColor: PRIMARY,
   },
 
+  // ESTADOS VACÍOS
   emptyRow: {
     paddingVertical: 6,
   },
   emptyText: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 12,
   },
 
+  // PRÓXIMOS VENCIMIENTOS
   billRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     backgroundColor: SURFACE,
     borderRadius: 12,
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: 10,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
     marginBottom: 6,
   },
   billLeft: {
@@ -630,27 +1532,166 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   billIconWrapper: {
-    width: 32,
-    height: 32,
+    width: 30,
+    height: 30,
     borderRadius: 999,
-    backgroundColor: "#1f2937",
+    backgroundColor: "rgba(45,212,191,0.08)",
     alignItems: "center",
     justifyContent: "center",
   },
   billName: {
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 13,
     fontWeight: "600",
   },
   billSubtitle: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 11,
     marginTop: 1,
   },
   billAmount: {
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 13,
     fontWeight: "700",
     marginLeft: 8,
+  },
+
+  // CARD sobres / apartados
+  envelopesCard: {
+    backgroundColor: SURFACE,
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    marginBottom: 10,
+  },
+  envelopesCountText: {
+    color: TEXT_MUTED,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  viewAllText: {
+    color: PRIMARY,
+    fontSize: 12,
+    fontWeight: "600",
+    textDecorationLine: "underline",
+  },
+  envelopeFormRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 6,
+  },
+  envelopeInput: {
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    backgroundColor: INPUT_BG,
+    paddingHorizontal: 10,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+  },
+  envelopeAddButton: {
+    marginLeft: 6,
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: PRIMARY,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  envelopeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+    gap: 8,
+    paddingVertical: 4,
+  },
+  envelopeTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  envelopeSubtitle: {
+    color: TEXT_MUTED,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  envelopeSpendButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 999,
+    backgroundColor: ICON_BG,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  // MODAL metas / sobres / extra
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(7,42,74,0.1)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    backgroundColor: SURFACE,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 16,
+    borderTopWidth: 1,
+    borderColor: BORDER_SOFT,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  modalTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  modalSubtitle: {
+    marginTop: 8,
+    color: TEXT_MUTED,
+    fontSize: 12,
+  },
+  goalRowModal: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER_SOFT,
+  },
+
+  // Inputs y botón para modal de sobres / extra
+  label: {
+    color: TEXT_MUTED,
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  input: {
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER_SOFT,
+    backgroundColor: INPUT_BG,
+    paddingHorizontal: 12,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+  },
+  saveButton: {
+    marginTop: 16,
+    marginBottom: 8,
+    backgroundColor: PRIMARY,
+    borderRadius: 999,
+    height: 46,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  saveButtonText: {
+    color: BUTTON_TEXT,
+    fontSize: 15,
+    fontWeight: "700",
   },
 });

@@ -16,9 +16,20 @@ import { MaterialIcons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { api } from "../../src/api/client";
 
-const PRIMARY = "#13ec5b";
-const BG_DARK = "#020617";
-const SURFACE = "#0b1120";
+const PRIMARY = "#084D6E"; // azul principal
+const BG_DARK = "#d9e1e9ff"; // fondo claro y sereno
+const SURFACE = "#FFFFFF"; // tarjetas
+const TEXT_PRIMARY = "#072A4A"; // texto principal, azul oscuro
+const TEXT_MUTED = "#59708B"; // texto secundario, gris azulado
+const BORDER_SOFT = "#E6EEF7"; // bordes sutiles
+const AVATAR_BG = PRIMARY;
+const ICON_BG = "#0B2740"; // fondo de iconos redondos
+const INPUT_BG = "#F0F5FB"; // fondo input suave
+const BUTTON_TEXT = "#FFFFFF";
+const PROGRESS_BG = "#EAF2FF";
+const ICON_ACCENT = "#2DD4BF";
+const CHANGE_POS = "#16A34A";
+const CHANGE_NEG = "#DC2626";
 
 type BillStatus = "pending" | "paid" | "all";
 
@@ -26,10 +37,15 @@ type Bill = {
   id: number;
   name: string;
   amount: number;
-  status: "pending" | "paid";
-  due_date: string; // ISO yyyy-mm-dd
+  status: "pending" | "paid" | "cancelled" | string;
+  due_date: string | null; // ISO yyyy-mm-dd
   category?: string | null;
   paid_at?: string | null;
+  // Nuevos campos que devuelve el backend
+  is_paid?: boolean;
+  is_overdue?: boolean;
+  days_until_due?: number | null;
+  status_text?: string | null;
 };
 
 type BillsIndexResponse =
@@ -39,16 +55,21 @@ type BillsIndexResponse =
       [key: string]: any;
     };
 
-function getDaysDiff(dueDate: string) {
+function getDaysDiff(dateString?: string | null) {
+  if (!dateString) return 0;
+
   const today = new Date();
-  const date = new Date(dueDate);
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return 0;
+
   const diffMs = date.getTime() - today.setHours(0, 0, 0, 0);
   const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
   return diffDays;
 }
 
 function formatAmount(amount: number) {
-  return amount.toLocaleString("es-MX", {
+  const n = typeof amount === "number" && !isNaN(amount) ? amount : 0;
+  return n.toLocaleString("es-MX", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
@@ -88,9 +109,11 @@ export default function BillsScreen() {
   const openEditModal = (bill: Bill) => {
     setEditingBill(bill);
     setLabel(bill.name);
-    setAmount(String(bill.amount));
-    setStatusForm(bill.status);
-    setDueDate(new Date(bill.due_date));
+    setAmount(String(bill.amount ?? ""));
+    setStatusForm(
+      bill.status === "paid" || bill.is_paid ? "paid" : "pending"
+    );
+    setDueDate(bill.due_date ? new Date(bill.due_date) : new Date());
     setModalVisible(true);
   };
 
@@ -126,20 +149,26 @@ export default function BillsScreen() {
       return;
     }
 
-    const parsedAmount = parseFloat(amount);
-    if (isNaN(parsedAmount)) {
+    const parsedAmount = parseFloat(amount.replace(/,/g, "").trim());
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
       Alert.alert("Monto inválido", "Ingresa un monto numérico válido.");
       return;
     }
 
     const dueDateString = dueDate.toISOString().substring(0, 10); // yyyy-mm-dd
 
-    const payload = {
+    // Base del payload que espera el backend
+    const payload: any = {
       name: label,
       amount: parsedAmount,
       due_date: dueDateString,
-      status: statusForm,
+      // provider, description, category, auto_debit se pueden agregar después
     };
+
+    // Solo en edición dejamos cambiar status
+    if (editingBill) {
+      payload.status = statusForm;
+    }
 
     try {
       setLoadingAction(true);
@@ -194,12 +223,24 @@ export default function BillsScreen() {
     const others: Bill[] = [];
 
     bills.forEach((bill) => {
-      const days = getDaysDiff(bill.due_date);
-      if (days < 0 && bill.status === "pending") {
-        overdue.push(bill);
-      } else if (days >= 0 && days <= 7 && bill.status === "pending") {
-        upcoming.push(bill);
+      const isPaid = bill.is_paid || bill.status === "paid";
+      const backendDays =
+        typeof bill.days_until_due === "number"
+          ? bill.days_until_due
+          : null;
+
+      const days = backendDays ?? getDaysDiff(bill.due_date || undefined);
+
+      if (!isPaid) {
+        if (bill.is_overdue || days < 0) {
+          overdue.push(bill);
+        } else if (days >= 0 && days <= 7) {
+          upcoming.push(bill);
+        } else {
+          others.push(bill);
+        }
       } else {
+        // los pagados los mandamos a "otros" o solo aparecerán si el filtro es "paid"
         others.push(bill);
       }
     });
@@ -208,18 +249,25 @@ export default function BillsScreen() {
   }, [bills]);
 
   const renderBillRow = (bill: Bill) => {
-    const days = getDaysDiff(bill.due_date);
-    let chipColor = "#9ca3af";
-    let chipText = `Vence en ${days} días`;
+    const isPaid = bill.is_paid || bill.status === "paid";
+    const backendDays =
+      typeof bill.days_until_due === "number"
+        ? bill.days_until_due
+        : null;
 
-    if (bill.status === "paid") {
-      chipColor = "#22c55e";
-      chipText = "Pagado";
-    } else if (days < 0) {
-      chipColor = "#f97373";
-      chipText = "Vencido";
+    const days = backendDays ?? getDaysDiff(bill.due_date || undefined);
+
+    let chipColor = TEXT_MUTED;
+    let chipText = bill.status_text || `Vence en ${days} días`;
+
+    if (isPaid) {
+      chipColor = CHANGE_POS;
+      chipText = bill.status_text || "Pagado";
+    } else if (bill.is_overdue || days < 0) {
+      chipColor = CHANGE_NEG;
+      chipText = bill.status_text || "Vencido";
     } else if (days <= 3) {
-      chipColor = "#fbbf24";
+      chipColor = ICON_ACCENT;
     }
 
     let icon: keyof typeof MaterialIcons.glyphMap = "credit-card";
@@ -240,7 +288,7 @@ export default function BillsScreen() {
       >
         <View style={styles.billLeft}>
           <View style={styles.billIconWrapper}>
-            <MaterialIcons name={icon} size={22} color="#e5e7eb" />
+            <MaterialIcons name={icon} size={22} color={BUTTON_TEXT} />
           </View>
           <View>
             <Text style={styles.billLabel}>{bill.name}</Text>
@@ -250,7 +298,9 @@ export default function BillsScreen() {
           </View>
         </View>
         <View style={styles.billRight}>
-          <Text style={styles.billAmount}>${formatAmount(bill.amount)}</Text>
+          <Text style={styles.billAmount}>
+            ${formatAmount(bill.amount ?? 0)}
+          </Text>
         </View>
       </TouchableOpacity>
     );
@@ -262,11 +312,11 @@ export default function BillsScreen() {
         {/* Top bar */}
         <View style={styles.header}>
           <TouchableOpacity activeOpacity={0.7}>
-            <MaterialIcons name="arrow-back" size={24} color="#e5e7eb" />
+            <MaterialIcons name="arrow-back" size={24} color={TEXT_PRIMARY} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Recibos y Pagos</Text>
           <TouchableOpacity activeOpacity={0.7}>
-            <MaterialIcons name="search" size={24} color="#e5e7eb" />
+            <MaterialIcons name="search" size={24} color={TEXT_PRIMARY} />
           </TouchableOpacity>
         </View>
 
@@ -348,7 +398,7 @@ export default function BillsScreen() {
             {/* Vencidos */}
             {groupedBills.overdue.length > 0 && (
               <>
-                <Text style={[styles.sectionTitle, { color: "#f97373" }]}>
+                <Text style={[styles.sectionTitle, { color: CHANGE_NEG }]}>
                   Vencidos
                 </Text>
                 {groupedBills.overdue.map(renderBillRow)}
@@ -376,7 +426,7 @@ export default function BillsScreen() {
                 <MaterialIcons
                   name="receipt-long"
                   size={40}
-                  color="rgba(148,163,184,0.8)"
+                  color={TEXT_MUTED}
                 />
                 <Text style={styles.emptyTitle}>Sin recibos aún</Text>
                 <Text style={styles.emptyText}>
@@ -389,7 +439,7 @@ export default function BillsScreen() {
 
         {/* FAB */}
         <TouchableOpacity style={styles.fab} onPress={openCreateModal}>
-          <MaterialIcons name="add" size={30} color="#020617" />
+          <MaterialIcons name="add" size={30} color={ICON_BG} />
         </TouchableOpacity>
 
         {/* Modal de crear/editar */}
@@ -406,7 +456,7 @@ export default function BillsScreen() {
                   {editingBill ? "Editar recibo" : "Nuevo recibo"}
                 </Text>
                 <TouchableOpacity onPress={closeModal}>
-                  <MaterialIcons name="close" size={22} color="#9ca3af" />
+                  <MaterialIcons name="close" size={22} color={TEXT_MUTED} />
                 </TouchableOpacity>
               </View>
 
@@ -415,7 +465,7 @@ export default function BillsScreen() {
                 <TextInput
                   style={styles.input}
                   placeholder="Ej. Recibo de luz"
-                  placeholderTextColor="#6b7280"
+                  placeholderTextColor={TEXT_MUTED}
                   value={label}
                   onChangeText={setLabel}
                 />
@@ -426,7 +476,7 @@ export default function BillsScreen() {
                 <TextInput
                   style={styles.input}
                   placeholder="Ej. 450.00"
-                  placeholderTextColor="#6b7280"
+                  placeholderTextColor={TEXT_MUTED}
                   keyboardType="decimal-pad"
                   value={amount}
                   onChangeText={setAmount}
@@ -440,7 +490,7 @@ export default function BillsScreen() {
                   onPress={() => setShowDatePicker(true)}
                   style={[styles.input, { justifyContent: "center" }]}
                 >
-                  <Text style={{ color: "#f9fafb", fontSize: 13 }}>
+                  <Text style={{ color: TEXT_PRIMARY, fontSize: 13 }}>
                     {dueDate.toISOString().substring(0, 10)}
                   </Text>
                 </TouchableOpacity>
@@ -466,14 +516,16 @@ export default function BillsScreen() {
                   <TouchableOpacity
                     style={[
                       styles.segmentItemSmall,
-                      statusForm === "pending" && styles.segmentItemActiveSmall,
+                      statusForm === "pending" &&
+                        styles.segmentItemActiveSmall,
                     ]}
                     onPress={() => setStatusForm("pending")}
                   >
                     <Text
                       style={[
                         styles.segmentTextSmall,
-                        statusForm === "pending" && styles.segmentTextActive,
+                        statusForm === "pending" &&
+                          styles.segmentTextActive,
                       ]}
                     >
                       Pendiente
@@ -482,14 +534,16 @@ export default function BillsScreen() {
                   <TouchableOpacity
                     style={[
                       styles.segmentItemSmall,
-                      statusForm === "paid" && styles.segmentItemActiveSmall,
+                      statusForm === "paid" &&
+                        styles.segmentItemActiveSmall,
                     ]}
                     onPress={() => setStatusForm("paid")}
                   >
                     <Text
                       style={[
                         styles.segmentTextSmall,
-                        statusForm === "paid" && styles.segmentTextActive,
+                        statusForm === "paid" &&
+                          styles.segmentTextActive,
                       ]}
                     >
                       Pagado
@@ -524,7 +578,12 @@ export default function BillsScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: BG_DARK },
-  container: { flex: 1, backgroundColor: BG_DARK, paddingHorizontal: 16 },
+  container: {
+    flex: 1,
+    backgroundColor: BG_DARK,
+    paddingHorizontal: 16,
+    marginTop: 30,
+  },
   header: {
     paddingTop: 8,
     paddingBottom: 8,
@@ -533,18 +592,18 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   headerTitle: {
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 18,
     fontWeight: "700",
   },
   segmentWrapper: { marginTop: 8, marginBottom: 4 },
   segmentBackground: {
     flexDirection: "row",
-    backgroundColor: "#020617",
+    backgroundColor: BG_DARK,
     borderRadius: 999,
     padding: 2,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   segmentItem: {
     flex: 1,
@@ -556,14 +615,14 @@ const styles = StyleSheet.create({
   segmentItemActive: { backgroundColor: SURFACE },
   segmentText: {
     fontSize: 12,
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontWeight: "500",
   },
-  segmentTextActive: { color: "#f9fafb", fontWeight: "700" },
+  segmentTextActive: { color: TEXT_PRIMARY, fontWeight: "700" },
   scroll: { flex: 1, marginTop: 8 },
   centerFill: { flex: 1, alignItems: "center", justifyContent: "center" },
-  loadingText: { marginTop: 8, color: "#9ca3af", fontSize: 12 },
-  errorText: { color: "#f97373", fontSize: 14, marginBottom: 8 },
+  loadingText: { marginTop: 8, color: TEXT_MUTED, fontSize: 12 },
+  errorText: { color: CHANGE_NEG, fontSize: 14, marginBottom: 8 },
   retryButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
@@ -573,7 +632,7 @@ const styles = StyleSheet.create({
   },
   retryText: { color: PRIMARY, fontWeight: "600", fontSize: 13 },
   sectionTitle: {
-    color: "#e5e7eb",
+    color: TEXT_PRIMARY,
     fontSize: 13,
     fontWeight: "600",
     marginTop: 14,
@@ -589,21 +648,21 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 6,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   billLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
   billIconWrapper: {
     width: 40,
     height: 40,
     borderRadius: 999,
-    backgroundColor: "#020617",
+    backgroundColor: ICON_BG,
     alignItems: "center",
     justifyContent: "center",
   },
-  billLabel: { color: "#f9fafb", fontSize: 14, fontWeight: "500" },
+  billLabel: { color: TEXT_PRIMARY, fontSize: 14, fontWeight: "500" },
   billChip: { fontSize: 11, marginTop: 2 },
   billRight: { alignItems: "flex-end" },
-  billAmount: { color: "#f9fafb", fontSize: 14, fontWeight: "700" },
+  billAmount: { color: TEXT_PRIMARY, fontSize: 14, fontWeight: "700" },
   emptyBox: {
     marginTop: 40,
     alignItems: "center",
@@ -611,13 +670,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   emptyTitle: {
-    color: "#e5e7eb",
+    color: TEXT_PRIMARY,
     fontSize: 16,
     fontWeight: "600",
     marginTop: 12,
   },
   emptyText: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 13,
     textAlign: "center",
     marginTop: 4,
@@ -642,16 +701,16 @@ const styles = StyleSheet.create({
   // Modal & form
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(15,23,42,0.85)",
+    backgroundColor: "rgba(7,42,74,0.06)",
     justifyContent: "flex-end",
   },
   modalCard: {
-    backgroundColor: BG_DARK,
+    backgroundColor: SURFACE,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 16,
     borderTopWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   modalHeader: {
     flexDirection: "row",
@@ -660,13 +719,13 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   modalTitle: {
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 16,
     fontWeight: "700",
   },
   formField: { marginTop: 10 },
   label: {
-    color: "#cbd5f5",
+    color: TEXT_MUTED,
     fontSize: 12,
     marginBottom: 4,
   },
@@ -674,19 +733,19 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#1f2937",
-    backgroundColor: "#020617",
+    borderColor: BORDER_SOFT,
+    backgroundColor: INPUT_BG,
     paddingHorizontal: 12,
-    color: "#f9fafb",
+    color: TEXT_PRIMARY,
     fontSize: 13,
   },
   segmentBackgroundSmall: {
     flexDirection: "row",
-    backgroundColor: "#020617",
+    backgroundColor: BG_DARK,
     borderRadius: 999,
     padding: 2,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: BORDER_SOFT,
   },
   segmentItemSmall: {
     flex: 1,
@@ -698,7 +757,7 @@ const styles = StyleSheet.create({
   segmentItemActiveSmall: { backgroundColor: SURFACE },
   segmentTextSmall: {
     fontSize: 11,
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontWeight: "500",
   },
   saveButton: {
@@ -711,7 +770,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   saveButtonText: {
-    color: "#052e16",
+    color: BUTTON_TEXT,
     fontSize: 15,
     fontWeight: "700",
   },
